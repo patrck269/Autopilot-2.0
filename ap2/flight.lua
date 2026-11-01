@@ -54,7 +54,7 @@ function M.run(cfg, opts)
   bank:seed()
   local tel = telemetry.new(cfg, { ship = ship, aero = aero, clock = os.clock })
   local saved = store.load(cfg.cal_file)
-  local ap = autopilot.new(cfg, saved, tel.rho_at(62))
+  local ap = autopilot.new(cfg, saved, tel.rho_at(62), tel)
   local ship_id = ship.getId and ship.getId() or nil
   local others = {} -- other flight computers heard on this ship: id -> time
   local slug = ship.getSlug and ship.getSlug() or "ship"
@@ -104,7 +104,9 @@ function M.run(cfg, opts)
       hdg = {
         err = ap.hdg.err, r_cmd = ap.hdg.r_cmd,
         yaw_b = ap.hdg.yaw.est.t[1], yaw_ok = ap.hdg.yaw.ok,
-        sway_b = ap.hdg.sway.est.t[1], sway_ok = ap.hdg.sway.ok, sway_active = ap.hdg.sway_active,
+        sway_auth = select(2, ap.motion:strafe_drift(last_s)), sway_ok = ap.motion:sway_ok(),
+        sway_active = ap.hdg.sway_active, drift = ap.hdg.drift,
+        bow = util.axis_name(tel.forward), bow_learned = ap.bow_learned,
       },
       rsc = bank:snapshot(now),
       eng = gauges,
@@ -165,7 +167,8 @@ function M.run(cfg, opts)
             return math.abs(a - b) > tol * math.max(math.abs(b), 1e-9)
           end
           if moved(cur.k, last_saved.k, 0.005) or moved(cur.A, last_saved.A, 0.01)
-            or moved(cur.yaw_b, last_saved.yaw_b, 0.05) or moved(cur.sway_b, last_saved.sway_b, 0.05) then
+            or moved(cur.yaw_b, last_saved.yaw_b, 0.05) or (cur.bow ~= nil) ~= (last_saved.bow ~= nil)
+            or (cur.bow and last_saved.bow and util.dot(cur.bow, last_saved.bow) < 0.9) then
             store.save(cfg.cal_file, cur)
             last_saved = cur
           end

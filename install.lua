@@ -17,6 +17,7 @@ local FILES = {
   "ap2/heading.lua",
   "ap2/link.lua",
   "ap2/mfd.lua",
+  "ap2/motion.lua",
   "ap2/pages.lua",
   "ap2/rls.lua",
   "ap2/speed.lua",

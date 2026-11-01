@@ -93,6 +93,21 @@ function M.rotate(q, v)
   }
 end
 
+-- Rotate vector v by the inverse of quaternion q (world -> ship-local).
+function M.rotate_inv(q, v)
+  local u = q.v or q
+  return M.rotate({ x = -u.x, y = -u.y, z = -u.z, w = q.a or q.w }, v)
+end
+
+-- Name of a grid axis vector, e.g. "+X" or "-Z" (nearest axis).
+function M.axis_name(v)
+  if not v then return "?" end
+  local ax, ay, az = math.abs(v.x), math.abs(v.y), math.abs(v.z)
+  if ax >= ay and ax >= az then return (v.x >= 0 and "+" or "-") .. "X" end
+  if az >= ay then return (v.z >= 0 and "+" or "-") .. "Z" end
+  return (v.y >= 0 and "+" or "-") .. "Y"
+end
+
 function M.fmt(v, decimals, width)
   local s
   if not M.finite(v) then

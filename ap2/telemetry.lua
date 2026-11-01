@@ -1,6 +1,8 @@
 -- Reads ship state from the CC:VS `ship` and `aero` APIs and expresses it in
 -- pilot terms: world Y, vertical speed, compass heading, forward/side speed,
--- pitch, roll and yaw rate.
+-- pitch, roll and yaw rate. It also reports velocity in the hull's own
+-- horizontal plane (axes e1, e2 fixed to the hull), which the autopilot uses
+-- to learn which way the hull's bow and strafe really point.
 local util = require("ap2.util")
 
 local M = {}
@@ -16,13 +18,30 @@ end
 
 -- api = { ship = <CC:VS ship API>, aero = <CC:VS aero API or nil>, clock = os.clock }
 function M.new(cfg, api)
-  local fwd = unit(cfg.frame.forward)
   local up = unit(cfg.frame.up)
-  local right = util.cross(fwd, up)
+  local fwd, right
+  -- Hull-fixed horizontal basis: e1 = the grid axis most across "up", e2 = e1 x up.
+  local e1 = math.abs(up.x) < 0.9 and { x = 1, y = 0, z = 0 } or { x = 0, y = 0, z = 1 }
+  e1 = unit({ x = e1.x - util.dot(e1, up) * up.x, y = e1.y - util.dot(e1, up) * up.y, z = e1.z - util.dot(e1, up) * up.z })
+  local e2 = util.cross(e1, up)
   local ship, aero, clock = api.ship, api.aero, api.clock
   local last_t, last_pitch, last_hdg, last_rate
 
-  local self = {}
+  local self = { e1 = e1, e2 = e2, up = up }
+
+  -- Use hull-local vector v as the bow (snapped bow axes come from learning).
+  function self.set_forward(v)
+    fwd = unit(v)
+    right = util.cross(fwd, up)
+    self.forward = fwd
+    last_t = nil -- the heading jumps: no yaw-rate spike
+  end
+  self.set_forward(cfg.frame.forward)
+
+  -- Components of a hull-local vector in the hull's horizontal plane.
+  function self.plane(v)
+    return util.dot(v, e1), util.dot(v, e2)
+  end
 
   -- Air density at world Y; 1.0 when the aero API is unavailable (the hover
   -- calibration then absorbs the density change as it flies).
@@ -60,7 +79,11 @@ function M.new(cfg, api)
     end
     last_t, last_pitch, last_hdg, last_rate = now, pitch, heading, yaw_rate
 
+    local vl = util.rotate_inv(q, vel)
+    local lv1, lv2 = self.plane(vl)
     local s = {
+      q = q,
+      lv1 = lv1, lv2 = lv2, -- velocity along the hull's own horizontal axes
       t = now,
       x = pos.x, y = pos.y, z = pos.z,
       vx = vel.x, vy = vel.y, vz = vel.z,

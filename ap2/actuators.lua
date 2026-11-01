@@ -87,6 +87,7 @@ function M.new(cfg, devices)
       impact = nil,   -- learned stress (SU) per RPM of this controller
       held = false,   -- an increase is being held back by the stress governor
       foreign_at = nil,
+      prop = nil,     -- modelled spin of the props behind it (RPM)
     }
     self.hit[id] = { id }
     for _, d in ipairs(self.cfg.downstream[id] or {}) do
@@ -102,7 +103,10 @@ function M:seed()
     local c = self.ch[id]
     if c.dev and c.dev.getTargetSpeed then
       local ok, v = pcall(c.dev.getTargetSpeed)
-      if ok and util.finite(v) then c.applied = util.round(v * c.sign) end
+      if ok and util.finite(v) then
+        c.applied = util.round(v * c.sign)
+        c.prop = c.applied -- assume a running ship's props are already at speed
+      end
     end
   end
 end
@@ -132,6 +136,32 @@ end
 
 function M:applied(id)
   return self.ch[id].applied or 0
+end
+
+-- Advance the modelled prop spin to time now. Clockwork's propeller bearing
+-- (PropellerBearingBlockEntity.tick) moves its spin half way to the target
+-- each tick, at most 32 RPM per tick: 1000 RPM takes about 1.6 s.
+function M:spin(now)
+  local t = self.spin_t or now
+  local steps = math.min(200, math.floor((now - t) / 0.05 + 1e-6))
+  if steps <= 0 and self.spin_t then return end
+  self.spin_t = (self.spin_t or now) + steps * 0.05
+  local slew = self.cfg.prop_slew
+  for _, id in ipairs(M.ORDER) do
+    local c = self.ch[id]
+    local target = c.applied or 0
+    local p = c.prop or target
+    for _ = 1, steps do
+      p = p + util.clamp((target - p) / 2, -slew, slew)
+    end
+    c.prop = p
+  end
+end
+
+-- Modelled RPM the props behind controller id are really turning at.
+function M:prop(id, now)
+  if now then self:spin(now) end
+  return self.ch[id].prop or self.ch[id].applied or 0
 end
 
 -- A stressometer reading of the engine network (stress and capacity in SU).
@@ -358,6 +388,7 @@ end
 -- Write at most one controller. Returns the channel id written, or nil.
 -- setTargetSpeed runs on the server thread, so in game this call yields.
 function M:service(now)
+  self:spin(now)
   -- Emergency zeros first.
   if self.urgent then
     for _, id in ipairs(M.ORDER) do

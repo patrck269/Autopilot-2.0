@@ -1,42 +1,70 @@
--- Two-parameter recursive least squares with forgetting, for models of the
--- form y = t1 * x1 + t2 * x2. Used to learn thrust/drag and RCS authority.
+-- Recursive least squares with forgetting for linear models
+--     y = t[1] * x[1] + ... + t[n] * x[n]
+-- Used to learn thrust/drag, RCS authority and the hull's axes in flight.
 local util = require("ap2.util")
 
 local M = {}
 M.__index = M
 
--- theta: starting {t1, t2}; p0: starting variance {p1, p2}; lambda: forgetting.
+-- theta: starting parameters; p0: starting variance per parameter;
+-- lambda: forgetting factor.
 function M.new(theta, p0, lambda)
-  return setmetatable({
-    t = { theta[1], theta[2] },
-    p0 = { p0[1], p0[2] },
-    P = { p0[1], 0, 0, p0[2] },
-    lambda = lambda or 0.98,
-    n = 0,
-  }, M)
+  local n = #theta
+  local self = setmetatable({ n = n, t = {}, p0 = {}, lambda = lambda or 0.98, count = 0 }, M)
+  for i = 1, n do
+    self.t[i] = theta[i]
+    self.p0[i] = p0[i]
+  end
+  self:reset_variance()
+  return self
 end
 
-function M:update(x1, x2, y)
-  local P, lambda = self.P, self.lambda
-  local p1 = P[1] * x1 + P[2] * x2
-  local p2 = P[3] * x1 + P[4] * x2
-  local denom = lambda + x1 * p1 + x2 * p2
-  local k1, k2 = p1 / denom, p2 / denom
-  local err = y - (self.t[1] * x1 + self.t[2] * x2)
-  local t1, t2 = self.t[1] + k1 * err, self.t[2] + k2 * err
-  local r1 = x1 * P[1] + x2 * P[3]
-  local r2 = x1 * P[2] + x2 * P[4]
-  P[1] = (P[1] - k1 * r1) / lambda
-  P[2] = (P[2] - k1 * r2) / lambda
-  P[3] = (P[3] - k2 * r1) / lambda
-  P[4] = (P[4] - k2 * r2) / lambda
-  -- Forgetting with no excitation lets P grow without bound; cap it.
-  if P[1] + P[4] > 12.5 * (self.p0[1] + self.p0[2]) or not util.finite(P[1] + P[2] + P[3] + P[4]) then
-    self.P = { self.p0[1], 0, 0, self.p0[2] }
+function M:reset_variance()
+  local P = {}
+  for i = 1, self.n do
+    P[i] = {}
+    for j = 1, self.n do P[i][j] = (i == j) and self.p0[i] or 0 end
   end
-  if util.finite(t1) and util.finite(t2) then
-    self.t[1], self.t[2] = t1, t2
-    self.n = self.n + 1
+  self.P = P
+end
+
+-- One sample: inputs x (list of n numbers) and output y. Returns the error.
+function M:update(x, y)
+  local n, P, lambda = self.n, self.P, self.lambda
+  local px = {}
+  local denom = lambda
+  for i = 1, n do
+    local s = 0
+    for j = 1, n do s = s + P[i][j] * x[j] end
+    px[i] = s
+    denom = denom + x[i] * s
+  end
+  local err = y
+  for i = 1, n do err = err - self.t[i] * x[i] end
+  local k = {}
+  for i = 1, n do k[i] = px[i] / denom end
+  local t = {}
+  local ok = true
+  for i = 1, n do
+    t[i] = self.t[i] + k[i] * err
+    if not util.finite(t[i]) then ok = false end
+  end
+  -- P = (P - k * (x' P)) / lambda; x' P = px' because P is symmetric.
+  local trace = 0
+  for i = 1, n do
+    for j = 1, n do
+      P[i][j] = (P[i][j] - k[i] * px[j]) / lambda
+      if not util.finite(P[i][j]) then ok = false end
+    end
+    trace = trace + P[i][i]
+  end
+  -- Forgetting with no excitation lets P grow without bound; cap it.
+  local trace0 = 0
+  for i = 1, n do trace0 = trace0 + self.p0[i] end
+  if not ok or trace > 12.5 * trace0 then self:reset_variance() end
+  if ok then
+    self.t = t
+    self.count = self.count + 1
   end
   return err
 end

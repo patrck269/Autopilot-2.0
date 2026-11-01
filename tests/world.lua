@@ -25,7 +25,7 @@ W.DEFAULTS = {
   dip = 0.0,            -- deg/s^2 nose down per m/s^2 of rear thrust
   pitch_spring = 0.4,
   pitch_damp = 0.8,
-  prop_lag = 0.15,
+  prop_slew = 32,       -- Clockwork bearing: spin moves half way to the target each tick, at most this RPM
   ground_y = 64,
   noise = 0,            -- +- m/s added to each velocity reading
   -- Engine network: capacity (SU) and stress per RPM of each controller's props.
@@ -176,7 +176,8 @@ function W.new(controllers, opts, gravity)
   function w.step(dt)
     local rho = W.rho(w.y)
     for id, v in pairs(w.cmd) do
-      w.rpm[id] = w.rpm[id] + (v - w.rpm[id]) * math.min(1, dt / p.prop_lag)
+      -- PropellerBearingBlockEntity.tick: omega += clamp((target - omega) / 2, +-32 RPM)
+      w.rpm[id] = w.rpm[id] + math.max(-p.prop_slew, math.min(p.prop_slew, (v - w.rpm[id]) / 2))
       w.flick[id] = math.max(0, w.flick[id] - 1)
     end
     w.ticks = w.ticks + 1

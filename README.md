@@ -39,7 +39,7 @@ The role can also be changed later in `ap2/config.lua`, or passed to the program
 
 At start-up each program checks every modem and peripheral it needs. Anything missing is listed on the terminal, and on the MFDs when they can be drawn. The flight computer writes nothing to the controllers until the list is clear, then starts on its own as soon as the missing device is attached.
 
-Before the first flight, check two things. Bow direction: `frame.forward` must be the hull's ship-local bow axis (default +X), so the HSI heading matches the direction the bow points. Controller direction: a controller that turns backwards gets `sign = -1`.
+Before the first flight, check controller direction: a controller that turns backwards gets `sign = -1`. The bow axis doesn't have to be right in `frame.forward` (default +X): the flight computer learns it from which way the rear thrusters push the hull (positive RPM pushes forward). It snaps that to the block grid, switches to it while keeping the ship pointing where it is, and remembers it. SYS shows "BOW AXIS CORRECTED: HEADING NOW TRUE", and CAL shows the axis. It is learned the first time the rear thrusters run for a few seconds (braking a drift, or a CRUISE).
 
 ## Flying
 
@@ -73,7 +73,7 @@ Each monitor is one MFD with option-select buttons around the edge. Top-row and 
 | AP | Mode, every target against its actual value, bearing error, speed reference, hover RPM here and at the target, alerts |
 | HSI | Heading-up compass rose with bearing bug and track, ground speed, drift, X/Z position |
 | ENG | Main engine RPM, stress against capacity, each controller's applied and desired RPM against its cap. Orange: held by the stress limit. Magenta: changed by another computer. Red: missing |
-| CAL | Ground or airborne, sample count, hover RPM here and at target, air density, lift constant, altitude trim, mass, learned thrust and drag, learned RCS turning and sideways strength |
+| CAL | Ground or airborne, sample count, hover RPM here and at target, air density, lift constant, altitude trim, mass, learned thrust and drag, learned RCS turning and sideways strength, bow axis (learned or config) |
 | SYS | Link health, start-up errors and warnings, live alerts, event log, DEBUG, KILL |
 | UFC | Keypad: type a number, then ALT, BRG, or SPD SET |
 
@@ -89,7 +89,9 @@ Each monitor is one MFD with option-select buttons around the edge. Top-row and 
 
 The bearing error sets a yaw-rate command, and a PI loop on yaw rate (taken from the change in heading between samples) gives a yaw acceleration. Turning and sideways strength are both learned in flight, direction included, and commands are divided by them. If the pullers act the other way, the opposite corners are used and SYS shows "RCS TURNS BACKWARDS: COMPENSATED". Until a direction is confirmed, that loop is held to 20%. If the RCS pulls at full for 3 s and the heading is still off, SYS shows "RCS AT FULL: HEADING NOT HELD".
 
-Station keeping: a heading correction starts when the heading is more than 2° off (1° in CRUISE) or the hull turns faster than 0.5°/s, and stops within 0.5°. In between, the RCS holds the trim its integral learned (an off-centre thrust line, say) or rests. Sideways drift over 0.5 m/s, including drift the ship already had when the autopilot took over, is braked with the same-side corners until it is under 0.15 m/s; then the sideways force rests. Heading gets first call on the RCS.
+Station keeping: a heading correction starts when the heading is more than 2° off (1° in CRUISE) or the hull turns faster than 0.5°/s, and stops within 0.5°. In between, the RCS holds the trim its integral learned (an off-centre thrust line, say) or rests. Sideways drift over 0.5 m/s, including drift the ship already had when the autopilot took over, is braked until it is under 0.15 m/s; then the sideways force rests. The brake works along the direction a sway force *really* moves the hull, learned in the hull's own frame, so it doesn't depend on `frame.forward` or on which way the pullers act. Heading gets first call on the RCS.
+
+Clockwork props don't follow the controller at once: the bearing changes spin by at most 32 RPM a tick, so 0 → 1000 RPM takes about 1.6 s, and spinning down takes as long. The flight computer models that spin. Every learner uses the force the props are really making, not the commanded RPM. The heading loop gets a lead for turn force still on its way, and the sideslip brake lets go early when the remaining spin will finish the job.
 
 **Controller protection.** In Create 6.0.8 a rotation speed controller is destroyed when its flicker score passes 128; the score decays 1 per tick (20 a second). A target change detaches the controller and re-attaches it. Every block that gets its rotation *through* that controller drops to 0 (+5) and comes back (+5): its own props, and every controller downstream of it. On this ship the four RCS controllers are fed through the elevation controller but not through each other. So an elevation write costs the elevation and all four RCS +10 each, and an RCS write costs only itself. Every switch of the engine network between overstressed and not also costs every block +5. The layout is `actuator.downstream` in `ap2/config.lua`. The flight computer:
 

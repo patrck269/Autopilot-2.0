@@ -46,6 +46,17 @@ function M:drag(v)
   return self.Dn / (S * S) * v * math.abs(v)
 end
 
+-- The bow axis changed: what was learned along the old axis is wrong.
+function M:forget(v_now)
+  local c = self.c
+  self.A = c.accel_full
+  self.Dn = c.accel_full * (S / c.top_speed) ^ 2
+  self.est = rls.new({ self.A, self.Dn }, { 4, 4 }, 0.98)
+  self.win = nil
+  self.held_f = nil
+  self:reset(v_now)
+end
+
 -- Restart from the current speed (on engage) so there is no jump.
 function M:reset(v_now)
   self.v_ref = v_now
@@ -81,7 +92,7 @@ function M:observe(s, applied_f, now)
   if math.abs(f) < 0.02 and math.abs(x2) < 0.002 then return end -- nothing to learn from
   local y = (s.v_fwd - w.v0) / span
 
-  self.est:update(f, x2, y)
+  self.est:update({ f, x2 }, y)
   local t = self.est.t
   t[1] = util.clamp(t[1], 0.05, 30)
   t[2] = util.clamp(t[2], 0, 60)

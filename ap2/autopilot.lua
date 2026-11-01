@@ -14,6 +14,7 @@ local util = require("ap2.util")
 local altitude = require("ap2.altitude")
 local speed = require("ap2.speed")
 local heading = require("ap2.heading")
+local motion = require("ap2.motion")
 
 local M = {}
 M.__index = M
@@ -21,16 +22,23 @@ M.__index = M
 M.MODES = { STBY = true, HOVER = true, CRUISE = true, KILL = true, DEBUG = true }
 local RCS = { "bow_port", "bow_stbd", "stern_port", "stern_stbd" }
 
--- saved: table from a previous flight ({ k =, A =, Dn = }) or nil.
+-- saved: table from a previous flight ({ k =, A =, Dn =, yaw_b =, bow = }) or nil.
 -- sea_rho: air density at sea level (seeds the hover guess).
-function M.new(cfg, saved, sea_rho)
+-- tel: telemetry; the learned bow axis is applied to it.
+function M.new(cfg, saved, sea_rho, tel)
+  if saved and type(saved.bow) == "table" and util.finite(saved.bow.x) then
+    tel.set_forward(saved.bow)
+  end
   local self = setmetatable({
     cfg = cfg,
+    tel = tel,
     mode = "STBY",
     tgt = { alt = nil, brg = nil, spd = 0 },
     alt = altitude.new(cfg, saved, sea_rho),
     spd = speed.new(cfg, saved),
     hdg = heading.new(cfg, saved),
+    motion = motion.new(cfg, tel),
+    bow_learned = saved ~= nil and saved.bow ~= nil,
     sea_rho = sea_rho,
     caps = {},
     accel_limited_since = nil,
@@ -50,7 +58,7 @@ function M:engage(mode, s)
   local prev = self.mode
   self.mode = mode
   -- Learning pauses in KILL and DEBUG; start fresh windows either side.
-  self.alt.win, self.spd.win, self.hdg.win = nil, nil, nil
+  self.alt.win, self.spd.win, self.hdg.win, self.motion.win = nil, nil, nil, nil
   if mode == "HOVER" or mode == "CRUISE" then
     if self.tgt.alt == nil then self.tgt.alt = util.round(s.y) end
     if self.tgt.brg == nil then self.tgt.brg = util.round(s.hdg) % 360 end
@@ -147,19 +155,39 @@ function M:step(s, now, dt, bank)
 
   local flying = self.mode == "HOVER" or self.mode == "CRUISE"
   local want_up = flying and self.tgt.alt ~= nil and self.tgt.alt > s.y + cfg.altitude.hold_band
+  -- Learning uses the force the props are really making (their modelled
+  -- spin, which lags the controller by up to ~1.6 s), not the commanded RPM.
+  local lift_prop = bank:prop("lift", now)
+  local thr_prop = bank:prop("thrust", now)
+  local rcs_prop = {}
+  for _, id in ipairs(RCS) do rcs_prop[id] = bank:prop(id, now) end
+  local u_now, sw_now = heading.applied(rcs_prop, self.caps)
+  local thr_f = util.ssq(thr_prop) / (thr_cap * thr_cap)
   -- While the engine is overstressed nothing turns: learning from it would
   -- teach every model that the props do nothing. Restart the windows after.
   if bank:overstressed(now) then
-    self.alt.win, self.spd.win, self.hdg.win = nil, nil, nil
+    self.alt.win, self.spd.win, self.hdg.win, self.motion.win = nil, nil, nil, nil
   else
-    if lift_applied ~= 0 or flying then
-      self.alt:observe(s, lift_applied, now, want_up)
+    if lift_prop ~= 0 or flying then
+      self.alt:observe(s, lift_prop, now, want_up)
     end
-    self.spd:observe(s, util.ssq(thr_applied) / (thr_cap * thr_cap), now)
-    local rcs_now = {}
-    for _, id in ipairs(RCS) do rcs_now[id] = bank:applied(id) end
-    local u_now, sw_now = heading.applied(rcs_now, self.caps)
-    self.hdg:observe(s, u_now, sw_now, now)
+    self.spd:observe(s, thr_f, now)
+    self.hdg:observe(s, u_now, now)
+    self.motion:observe(s, thr_f, sw_now, now)
+  end
+
+  -- The rear thrusters showed the bow is on another axis than configured:
+  -- switch to it, keep pointing where the ship points now, relearn speed.
+  local bow = self.motion.bow
+  if bow and util.dot(bow, self.tel.forward) < 0.9 then
+    local delta = util.wrap180(motion.plane_angle(self.tel, bow) - motion.plane_angle(self.tel, self.tel.forward))
+    self.tel.set_forward(bow)
+    if self.tgt.brg then self.tgt.brg = (self.tgt.brg + delta) % 360 end
+    self.bow_learned, self.bow_changed_at = true, now
+    self:log("BOW AXIS CORRECTED " .. util.fmt(delta) .. " DEG")
+    s = self.tel.read()
+    self.spd:forget(s.v_fwd)
+    self.hdg:reset()
   end
 
   if not flying then
@@ -171,7 +199,12 @@ function M:step(s, now, dt, bank)
   out.lift = self.alt:command(s, self.tgt.alt, dt, self.caps.lift)
   out.thrust = self.spd:command(s, dt, thr_cap, thr_applied)
   local deadzone = self.mode == "HOVER" and cfg.heading.hover_deadzone or cfg.heading.cruise_deadzone
-  local u, sw = self.hdg:command(s, self.tgt.brg, dt, deadzone)
+  local drift, auth = self.motion:strafe_drift(s)
+  local sway = { drift = drift, auth = auth, ok = self.motion:sway_ok(), coming = auth * sw_now * cfg.heading.sway_lag }
+  local rcs_set = {}
+  for _, id in ipairs(RCS) do rcs_set[id] = bank:applied(id) end
+  local u_set = heading.applied(rcs_set, self.caps)
+  local u, sw = self.hdg:command(s, self.tgt.brg, dt, deadzone, sway, u_set - u_now)
   -- Pulling at full and still off the bearing: the RCS can't hold this
   -- (e.g. thrust line too far off centre for the RCS cap).
   if math.abs(u) >= 0.99 and math.abs(self.hdg.err) > deadzone then
@@ -205,6 +238,12 @@ function M:alerts(s, now)
   if self.rcs_full_since and now - self.rcs_full_since > 3 then
     list[#list + 1] = "RCS AT FULL: HEADING NOT HELD"
   end
+  if self.bow_changed_at and now - self.bow_changed_at < 30 then
+    list[#list + 1] = "BOW AXIS CORRECTED: HEADING NOW TRUE"
+  end
+  if flying and self.hdg.sway_active and not self.motion:sway_ok() then
+    list[#list + 1] = "SIDEWAYS RCS: LEARNING"
+  end
   if s and math.abs(s.yaw_rate) > 3 * self.cfg.heading.max_rate then
     list[#list + 1] = "SPINNING " .. util.fmt(s.yaw_rate, 0) .. " DEG/S"
   end
@@ -221,7 +260,11 @@ end
 
 function M:saved()
   local h = self.hdg:saved()
-  return { k = self.alt.k, A = self.spd.A, Dn = self.spd.Dn, yaw_b = h.yaw_b, sway_b = h.sway_b }
+  local f = self.tel.forward
+  return {
+    k = self.alt.k, A = self.spd.A, Dn = self.spd.Dn, yaw_b = h.yaw_b,
+    bow = self.bow_learned and { x = f.x, y = f.y, z = f.z } or nil,
+  }
 end
 
 return M

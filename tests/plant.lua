@@ -23,7 +23,7 @@ function P.new(opts)
   local tel = telemetry.new(cfg, { ship = w.ship, aero = w.aero, clock = function() return w.t end })
   local bank = actuators.new(cfg, w.devices)
   bank:seed()
-  local ap = autopilot.new(cfg, opts.saved, tel.rho_at(62))
+  local ap = autopilot.new(cfg, opts.saved, tel.rho_at(62), tel)
   local sim = { w = w, p = w.p, cfg = cfg, ap = ap, bank = bank, tel = tel }
   local ctl_every = math.floor(cfg.loop_period / 0.05 + 0.5)
 

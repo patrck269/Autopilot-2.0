@@ -33,10 +33,17 @@ return {
 
   -- Ship-local axes as they were when the hull was assembled. forward points
   -- out of the bow, up out of the deck. Compass bearing: 0 = north (-Z),
-  -- 90 = east (+X), 180 = south, 270 = west.
+  -- 90 = east (+X), 180 = south, 270 = west. forward is only the first
+  -- guess: the flight computer learns the real bow axis from which way the
+  -- rear thrusters push the hull, snaps it to the block grid, switches to it
+  -- and remembers it (SYS shows "BOW AXIS CORRECTED").
   frame = {
     forward = { x = 1, y = 0, z = 0 },
     up = { x = 0, y = 1, z = 0 },
+    bow_samples = 8,      -- 0.5 s windows with rear thrust before the bow axis is trusted
+    bow_min_accel = 0.05, -- m/s^2 at full thrust: smaller responses are not trusted
+    bow_snap_deg = 25,    -- the learned direction must be this close to a grid axis
+    bow_streak = 4,       -- and give the same axis this many windows running
   },
 
   loop_period = 0.1,    -- control loop period, seconds
@@ -61,6 +68,7 @@ return {
     flicker_limit = 60,   -- no write may take any controller's score past this. KILL bypasses it;
                           -- its zero writes add at most ~30 more, so the worst case stays near 90
     lift_reserve = 20,    -- RCS score kept free for elevation writes
+    prop_slew = 32,       -- Clockwork props change spin by at most this RPM per tick
     min_interval = { lift = 1.0, thrust = 1.0, rcs = 1.0 }, -- seconds between writes to one controller
     deadband = { lift = 5, thrust = 15, rcs = 100 },        -- smallest RPM change worth a write
     weight = { lift = 3, thrust = 2, rcs = 1.5 },            -- who gets the next write
@@ -142,6 +150,8 @@ return {
     sway_gain = 0.3,      -- (m/s^2) per m/s of sideslip
     sway_engage = 0.5,    -- m/s
     sway_settle = 0.15,   -- m/s
+    sway_lag = 0.5,       -- s: drift the props' current spin will still add (they spin down slowly)
+    yaw_lag = 0.8,        -- s: lead on yaw rate for turn force still spinning up or down
   },
 
   -- DEBUG mode RPM for every controller (written to the block as is).
