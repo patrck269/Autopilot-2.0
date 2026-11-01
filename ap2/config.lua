@@ -73,7 +73,8 @@ return {
     deadband = { lift = 5, thrust = 15, rcs = 100 },        -- smallest RPM change worth a write
     weight = { lift = 3, thrust = 2, rcs = 1.5 },            -- who gets the next write
     slew = { thrust = 400, lift = 300, rcs = 1000 },         -- largest RPM change per write
-    stress_high = 0.85,   -- increases may not push engine stress past this share of capacity
+    stress_high = 0.85,   -- normal thrust may not push stress past this share of capacity
+    stress_rcs_high = 0.95, -- steering may use this share; rear thrust yields first
     stress_quiet = 0.75,  -- below this share a write cannot flip overstress
     foreign_hold = 5,     -- seconds to leave alone a controller something else changed
     rcs_min_rpm = 100,    -- smaller RCS commands are sent as 0 (finer pulses for a strong RCS)

@@ -499,5 +499,36 @@ do
     "a correctly labelled hull reports a match", events(good))
 end
 
+print("22. Cruise steering outranks rear thrust on a tight engine")
+do
+  -- Hover uses about 115k of this 150k-SU engine. The old shared 85% ceiling
+  -- left only enough room for roughly 181 RPM per RCS corner in CRUISE.
+  local sim = plant.new({
+    y = 150, psi = 0, rpm = { lift = 958 },
+    stress = { capacity = 150000, lift = 120, thrust = 60, rcs = 30 },
+    saved = { k = 10 / (plant.rho(62) * 900 * 900) },
+  })
+  sim.cmd("alt", 150)
+  sim.cmd("brg", 0)
+  sim.cmd("mode", "HOVER")
+  sim.run(5) -- establish the stress reading before cruise demand starts
+  sim.cmd("brg", 90)
+  sim.cmd("spd", 25)
+  sim.cmd("mode", "CRUISE")
+  local max_rcs, thrust_yielded = 0, false
+  sim.run(60, function(s2)
+    for _, id in ipairs({ "bow_port", "bow_stbd", "stern_port", "stern_stbd" }) do
+      max_rcs = math.max(max_rcs, math.abs(s2.w.cmd[id]))
+    end
+    local t = s2.bank.ch.thrust
+    if t.desired and t.applied and math.abs(t.desired) > math.abs(t.applied) and t.held then
+      thrust_yielded = true
+    end
+  end)
+  check(max_rcs > 300, "RCS exceeds the old 181 RPM cruise ceiling", "max " .. max_rcs)
+  check(thrust_yielded, "rear thrust yields engine capacity to steering")
+  check(sim.w.toggles == 0, "steering priority does not overstress the engine", sim.w.toggles .. " switches")
+end
+
 print(failures == 0 and "ALL FLIGHT CHECKS PASSED" or (failures .. " FLIGHT CHECK(S) FAILED"))
 os.exit(failures == 0 and 0 or 1)

@@ -33,10 +33,11 @@
 --     resisting turns, one corner alone strafes instead of turning)
 --   * the elevation goes first, then the largest weighted need
 --   * stress governor: from the stressometer (and each controller's learned
---     stress per RPM) an increase may not take predicted stress past
---     stress_high of capacity, the elevation first; when overstressed, rear
---     thrust and RCS are shed to 0 and the elevation is brought back under
---   * large changes are slewed; a sign reversal always writes 0 first
+--     stress per RPM), elevation gets first priority, RCS steering second, and
+--     rear thrust last. Rear thrust yields to reserve room for requested RCS.
+--     Normal thrust stays below stress_high; steering may use stress_rcs_high.
+--     When overstressed, rear thrust and RCS are shed to 0 and elevation is
+--     brought back under the limit
 --   * a controller changed by something else (another computer, a player) is
 --     left alone for foreign_hold seconds and reported
 --   * kill() bypasses pacing so zero goes out immediately
@@ -189,22 +190,31 @@ function M:prop(id, now)
   return self.ch[id].prop or self.ch[id].applied or 0
 end
 
--- A stressometer reading of the engine network (stress and capacity in SU).
--- With exactly one write since the last reading, the change in stress is that
--- controller's: learn its stress per RPM from it.
+-- A stressometer reading of the engine network. Learn stress per RPM when all
+-- writes since the previous sample belong to one controller group. An RCS pair
+-- is written on consecutive ticks, so requiring exactly one write leaves its
+-- cost permanently at the conservative whole-network average.
 function M:set_stress(su, cap, now)
   if not (util.finite(su) and util.finite(cap)) then
     self.stress, self.pred = nil, nil
     return
   end
   local prev = self.stress
-  if prev and #self.since == 1 then
-    local w = self.since[1]
-    if math.abs(w.grow) >= 20 then
-      local imp = (su - prev.su) / w.grow
+  if prev and #self.since > 0 then
+    local group, grow, same = nil, 0, true
+    for _, w in ipairs(self.since) do
+      local g = self.ch[w.id].group
+      if group and g ~= group then same = false end
+      group = group or g
+      grow = grow + w.grow
+    end
+    if same and math.abs(grow) >= 20 then
+      local imp = (su - prev.su) / grow
       if util.finite(imp) and imp > 0 then
-        local c = self.ch[w.id]
-        c.impact = c.impact and (0.6 * c.impact + 0.4 * imp) or imp
+        for _, w in ipairs(self.since) do
+          local c = self.ch[w.id]
+          c.impact = c.impact and (0.6 * c.impact + 0.4 * imp) or imp
+        end
       end
     end
   end
@@ -291,13 +301,60 @@ local function charge(self, id, now)
   end
 end
 
--- Target for channel c after the stress governor. The elevation comes first:
--- rear thrust and RCS only get the room it does not need.
+-- Stress-govern all four RCS corners as one force vector. Independent limits
+-- can leave one corner of a diagonal pair stronger than the other, turning a
+-- requested rotation into a strafe. Returns id -> target, or nil when there
+-- is not enough telemetry to coordinate the group.
+function M:rcs_governed(now)
+  if not fresh(self, now) then return nil end
+  local st = self.stress
+  local target = {}
+  if st.su >= st.cap then
+    for _, id in ipairs(RCS) do target[id] = 0 end
+    return target
+  end
+  local base = self.pred or st.su
+  local demand = 0
+  for _, id in ipairs(RCS) do
+    local c = self.ch[id]
+    local imp = self:impact(c)
+    if not (imp and imp > 0 and c.applied ~= nil) then return nil end
+    base = base - imp * math.abs(c.applied)
+    demand = demand + imp * math.abs(c.desired or 0)
+  end
+  local lift = self.ch.lift
+  local lift_imp = self:impact(lift)
+  local lift_growth = 0
+  if lift.desired and lift.applied and lift_imp then
+    lift_growth = lift_imp * math.max(0, math.abs(lift.desired) - math.abs(lift.applied))
+    base = base + lift_growth
+  end
+  -- If lift needs more power, RCS first sheds enough for lift to reach the
+  -- normal 85% ceiling. Once lift is steady, steering may use its 95% ceiling.
+  local share = lift_growth > 0 and self.cfg.stress_high
+    or (self.cfg.stress_rcs_high or self.cfg.stress_high)
+  local room = math.max(0, share * st.cap - base)
+  local scale = demand > 0 and math.min(1, room / demand) or 1
+  for _, id in ipairs(RCS) do
+    local c = self.ch[id]
+    target[id] = util.round((c.desired or 0) * scale)
+    c.held = math.abs(target[id]) < math.abs(c.desired or 0)
+  end
+  return target
+end
+
+-- Target for channel c after the stress governor. Priority is elevation, RCS,
+-- then rear thrust. Steering gets extra headroom because losing the bearing at
+-- cruise speed is less safe than slowing the acceleration.
 function M:governed(c, now)
   local want = c.desired
   local have = c.applied
   c.held = false
   if not fresh(self, now) then return want end
+  if c.group == "rcs" then
+    local rcs = self:rcs_governed(now)
+    if rcs then return rcs[c.id] end
+  end
   local st = self.stress
   local over = st.su >= st.cap
   if over and c.group ~= "lift" then want = 0 end
@@ -313,6 +370,23 @@ function M:governed(c, now)
       if need > 0 then
         room = room - need
         squeeze = true
+      end
+    end
+  end
+  if c.group == "thrust" then
+    -- Reserve the feasible, coordinated RCS target before rear thrust uses the
+    -- rest. This makes speed yield to steering without starving the lift.
+    local rcs = self:rcs_governed(now)
+    for _, id in ipairs(RCS) do
+      local r = self.ch[id]
+      local r_imp = self:impact(r)
+      local target = rcs and rcs[id] or r.desired
+      if target and r.applied and r_imp then
+        local need = r_imp * (math.abs(target) - math.abs(r.applied))
+        if need > 0 then
+          room = room - need
+          squeeze = true
+        end
       end
     end
   end
