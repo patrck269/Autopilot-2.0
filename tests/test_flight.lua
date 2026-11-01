@@ -1,0 +1,198 @@
+-- Closed-loop flight checks against tests/plant.lua. Run from the repo root:
+--   lua tests/test_flight.lua
+package.path = "./?.lua;" .. package.path
+local plant = require("tests.plant")
+local util = require("ap2.util")
+
+local failures = 0
+local function check(cond, label, detail)
+  if cond then
+    print("  ok    " .. label)
+  else
+    failures = failures + 1
+    print("  FAIL  " .. label .. (detail and ("  (" .. detail .. ")") or ""))
+  end
+end
+
+local function hover_rpm_true(sim, y)
+  return sim.p.hover_rpm_sea * math.sqrt(plant.rho(62) / plant.rho(y))
+end
+
+-- Track altitude behaviour from a moment on.
+local function watch()
+  local m = { max_y = -1e9, min_y = 1e9, max_vy = 0, reached = nil }
+  m.hook = function(sim, s)
+    if s.y > m.max_y then m.max_y = s.y end
+    if s.y < m.min_y then m.min_y = s.y end
+    if math.abs(s.vy) > m.max_vy then m.max_vy = math.abs(s.vy) end
+  end
+  return m
+end
+
+print("1. Ground start, no calibration, climb to 150 and hold")
+do
+  -- Real hover is 900 RPM at sea level; the untrained guess is 430.
+  local sim = plant.new({ hover_rpm_sea = 900 })
+  sim.cmd("alt", 150)
+  sim.cmd("mode", "HOVER")
+  local reached
+  sim.run(120, function(s2, s)
+    if not reached and math.abs(s.y - 150) < 1 then reached = s2.w.t end
+  end)
+  check(reached ~= nil and reached < 80, "reaches 150 +-1", "t=" .. tostring(reached))
+  local m = watch()
+  sim.run(60, m.hook)
+  check(m.max_y - 150 < 0.8 and 150 - m.min_y < 0.8, "holds 150 within 0.8 for 60 s",
+    string.format("min %.2f max %.2f", m.min_y, m.max_y))
+  local hov = hover_rpm_true(sim, 150)
+  local learned = sim.ap.alt:hover_rpm(plant.rho(150))
+  check(math.abs(learned - hov) / hov < 0.03, "learned hover RPM within 3%",
+    string.format("learned %.1f true %.1f", learned, hov))
+  check(sim.peak_flicker() <= 60, "flicker score stays <= 60", "peak " .. sim.peak_flicker())
+  print(string.format("     liftoff->150 in %.1f s, lift %d RPM, writes %d", reached or -1, sim.w.cmd.lift, sim.w.writes))
+
+  print("2. Same flight: climb to 400 (thinner air) then descend to 90")
+  sim.cmd("alt", 400)
+  local m2 = watch()
+  local t0 = sim.w.t
+  local r400
+  sim.run(150, function(s2, s)
+    m2.hook(s2, s)
+    if not r400 and math.abs(s.y - 400) < 1 then r400 = s2.w.t - t0 end
+  end)
+  check(r400 ~= nil, "reaches 400", "t=" .. tostring(r400))
+  check(m2.max_y < 403, "overshoot under 3 blocks", string.format("max %.2f", m2.max_y))
+  check(math.abs(sim.w.y - 400) < 0.8, "holds 400", string.format("y %.2f", sim.w.y))
+  local hov4 = hover_rpm_true(sim, 400)
+  check(math.abs(sim.w.cmd.lift - hov4) / hov4 < 0.04, "lift RPM at 400 near true hover",
+    string.format("cmd %d true %.1f", sim.w.cmd.lift, hov4))
+  print(string.format("     150->400 in %.1f s, max climb %.2f m/s", r400 or -1, m2.max_vy))
+
+  sim.cmd("alt", 90)
+  local m3 = watch()
+  sim.run(150, m3.hook)
+  check(m3.min_y > 87, "descent undershoot under 3 blocks", string.format("min %.2f", m3.min_y))
+  check(math.abs(sim.w.y - 90) < 0.8, "holds 90", string.format("y %.2f", sim.w.y))
+  check(sim.peak_flicker() <= 60, "flicker score stays <= 60", "peak " .. sim.peak_flicker())
+end
+
+print("3. Heavy hull (hover 2200 RPM) from the ground")
+do
+  local sim = plant.new({ hover_rpm_sea = 2200 })
+  sim.cmd("alt", 120)
+  sim.cmd("mode", "HOVER")
+  sim.run(150)
+  check(math.abs(sim.w.y - 120) < 1, "reaches and holds 120", string.format("y %.2f", sim.w.y))
+end
+
+print("4. Light hull (hover 300 RPM), calibration guess too high")
+do
+  local sim = plant.new({ hover_rpm_sea = 300 })
+  sim.cmd("alt", 100)
+  sim.cmd("mode", "HOVER")
+  local m = watch()
+  sim.run(120, m.hook)
+  check(math.abs(sim.w.y - 100) < 1, "reaches and holds 100", string.format("y %.2f", sim.w.y))
+  check(m.max_y < 104, "overshoot under 4 blocks", string.format("max %.2f", m.max_y))
+end
+
+print("5. Cruise: 0 -> 30 m/s within 15 s, hold bearing and altitude")
+do
+  local sim = plant.new({ hover_rpm_sea = 900, y = 200, rpm = { lift = 900 }, misalign = 0.15, psi = 10,
+    saved = { k = 10 / (plant.rho(62) * 900 * 900) } })
+  sim.cmd("alt", 200)
+  sim.cmd("brg", 90)
+  sim.cmd("mode", "HOVER")
+  sim.run(40)
+  check(math.abs(util.wrap180(sim.s.hdg - 90)) < 1, "hover turns to bearing 90", string.format("hdg %.2f", sim.s.hdg))
+  sim.cmd("spd", 30)
+  sim.cmd("mode", "CRUISE")
+  local t0 = sim.w.t
+  local reach
+  local max_hdg_err, max_alt_err, max_v = 0, 0, 0
+  sim.run(40, function(s2, s)
+    if not reach and math.abs(s.v_fwd - 30) < 1 then reach = s2.w.t - t0 end
+    if s2.w.t - t0 > 3 then
+      max_hdg_err = math.max(max_hdg_err, math.abs(util.wrap180(s.hdg - 90)))
+    end
+    max_alt_err = math.max(max_alt_err, math.abs(s.y - 200))
+    max_v = math.max(max_v, s.v_fwd)
+  end)
+  check(reach ~= nil and reach <= 15, "30 m/s (+-1) within 15 s", "t=" .. tostring(reach))
+  check(max_v < 31.5, "speed overshoot under 1.5 m/s", string.format("max %.2f", max_v))
+  check(max_hdg_err < 2, "heading within 2 deg at speed with thrust misalignment", string.format("%.2f", max_hdg_err))
+  check(max_alt_err < 2, "altitude within 2 blocks", string.format("%.2f", max_alt_err))
+  check(math.abs(sim.s.v_side) < 0.5, "sideslip cancelled", string.format("%.2f", sim.s.v_side))
+
+  print("6. Cap at 35 m/s")
+  local ok = sim.ap:command({ c = "spd", v = 50 }, sim.s)
+  check(ok and sim.ap.tgt.spd == 35, "target 50 clamps to 35", tostring(sim.ap.tgt.spd))
+  local max_v2 = 0
+  sim.run(40, function(_, s) max_v2 = math.max(max_v2, s.v_fwd) end)
+  check(max_v2 <= 35.5, "speed never above 35.5", string.format("%.2f", max_v2))
+  check(math.abs(sim.s.v_fwd - 35) < 1, "settles at 35", string.format("%.2f", sim.s.v_fwd))
+
+  print("7. Slow to 0 with reverse thrust")
+  sim.cmd("spd", 0)
+  local reverse, t0b, stopped = false, sim.w.t, nil
+  sim.run(40, function(s2, s)
+    if s2.w.cmd.thrust < 0 then reverse = true end
+    if not stopped and math.abs(s.v_fwd) < 0.5 then stopped = s2.w.t - t0b end
+  end)
+  check(reverse, "rear thrusters ran in reverse")
+  check(stopped ~= nil and stopped <= 15, "stopped (<0.5 m/s) within 15 s", "t=" .. tostring(stopped))
+  check(sim.peak_flicker() <= 60, "flicker score stays <= 60", "peak " .. sim.peak_flicker())
+end
+
+print("8. Nose dips under acceleration: thrust held back")
+do
+  -- Unprotected, full thrust here would pitch the nose about 8 deg down; cruise
+  -- drag alone about 3 deg.
+  local sim = plant.new({ hover_rpm_sea = 900, y = 200, rpm = { lift = 900 }, dip = 1.0,
+    saved = { k = 10 / (plant.rho(62) * 900 * 900) } })
+  sim.cmd("alt", 200)
+  sim.cmd("spd", 30)
+  sim.cmd("mode", "CRUISE")
+  local min_pitch, held, reach = 0, false, nil
+  sim.run(60, function(s2, s)
+    min_pitch = math.min(min_pitch, s.pitch)
+    if s2.ap.spd.pitch_hold then held = true end
+    if not reach and math.abs(s.v_fwd - 30) < 1 then reach = s2.w.t end
+  end)
+  check(held, "pitch protection engaged")
+  local limit = sim.cfg.speed.pitch_limit
+  check(min_pitch > -(limit + 1), "nose dip kept within limit + 1 deg", string.format("%.2f", min_pitch))
+  check(reach ~= nil, "still reaches 30 m/s", "t=" .. tostring(reach))
+  print(string.format("     reached 30 m/s at %.1f s with the nose limited", reach or -1))
+end
+
+print("9. KILL zeroes every controller at once")
+do
+  local sim = plant.new({ hover_rpm_sea = 900, y = 200, rpm = { lift = 900 },
+    saved = { k = 10 / (plant.rho(62) * 900 * 900) } })
+  sim.cmd("spd", 20)
+  sim.cmd("mode", "CRUISE")
+  sim.run(10)
+  sim.cmd("mode", "KILL")
+  sim.run(0.4)
+  local all_zero = true
+  for _, v in pairs(sim.w.cmd) do if v ~= 0 then all_zero = false end end
+  check(all_zero, "all controllers at 0 within 0.4 s")
+end
+
+print("10. Noisy velocity readings (+-0.15 m/s): calibrate and hold")
+do
+  math.randomseed(7)
+  local sim = plant.new({ hover_rpm_sea = 1200, noise = 0.15 })
+  sim.cmd("alt", 140)
+  sim.cmd("mode", "HOVER")
+  sim.run(100)
+  local m = watch()
+  sim.run(60, m.hook)
+  check(m.max_y - 140 < 1.5 and 140 - m.min_y < 1.5, "holds 140 within 1.5",
+    string.format("min %.2f max %.2f", m.min_y, m.max_y))
+  check(sim.peak_flicker() <= 60, "flicker score stays <= 60", "peak " .. sim.peak_flicker())
+end
+
+print(failures == 0 and "ALL FLIGHT CHECKS PASSED" or (failures .. " FLIGHT CHECK(S) FAILED"))
+os.exit(failures == 0 and 0 or 1)
