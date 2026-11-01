@@ -176,14 +176,15 @@ function M:step(s, now, dt, bank)
     self.motion:observe(s, thr_f, sw_now, now)
   end
 
-  -- The rear thrusters showed the bow is on another axis than configured:
-  -- switch to it, keep pointing where the ship points now, relearn speed.
+  -- The rear thrusters or the strafe pairs showed the bow is on another axis
+  -- than configured: switch to it, keep pointing where the ship points now,
+  -- relearn speed.
   local bow = self.motion.bow
   if bow and util.dot(bow, self.tel.forward) < 0.9 then
     local delta = util.wrap180(motion.plane_angle(self.tel, bow) - motion.plane_angle(self.tel, self.tel.forward))
     self.tel.set_forward(bow)
     if self.tgt.brg then self.tgt.brg = (self.tgt.brg + delta) % 360 end
-    self.bow_learned, self.bow_changed_at = true, now
+    self.bow_learned, self.bow_changed_at, self.motion.frame_ok = true, now, true
     self:log("BOW AXIS CORRECTED " .. util.fmt(delta) .. " DEG")
     s = self.tel.read()
     self.spd:forget(s.v_fwd)
@@ -199,8 +200,13 @@ function M:step(s, now, dt, bank)
   out.lift = self.alt:command(s, self.tgt.alt, dt, self.caps.lift)
   out.thrust = self.spd:command(s, dt, thr_cap, thr_applied)
   local deadzone = self.mode == "HOVER" and cfg.heading.hover_deadzone or cfg.heading.cruise_deadzone
-  local drift, auth = self.motion:strafe_drift(s)
-  local sway = { drift = drift, auth = auth, ok = self.motion:sway_ok(), coming = auth * sw_now * cfg.heading.sway_lag }
+  -- Until the frame is confirmed (or learned), a wrong axis would make the
+  -- sideways brake push the wrong way: keep it gentle.
+  local auth = self.motion:sway_authority()
+  local sway = {
+    drift = s.v_side, auth = auth, coming = auth * sw_now * cfg.heading.sway_lag,
+    limit = (self.motion.frame_ok or self.bow_learned) and 1 or cfg.heading.probe_limit,
+  }
   local rcs_set = {}
   for _, id in ipairs(RCS) do rcs_set[id] = bank:applied(id) end
   local u_set = heading.applied(rcs_set, self.caps)
@@ -231,18 +237,14 @@ function M:alerts(s, now)
     list[#list + 1] = "DEBUG: ALL PROPS AT +" .. self.cfg.debug_rpm .. " RPM, ELEVATION TOO"
   end
   local flying = self.mode == "HOVER" or self.mode == "CRUISE"
-  if flying and not self.hdg.yaw.ok then list[#list + 1] = "RCS TURN DIRECTION: LEARNING" end
-  if self.hdg.yaw.ok and self.hdg.yaw.est.t[1] < 0 then
-    list[#list + 1] = "RCS TURNS BACKWARDS: COMPENSATED"
-  end
   if self.rcs_full_since and now - self.rcs_full_since > 3 then
     list[#list + 1] = "RCS AT FULL: HEADING NOT HELD"
   end
   if self.bow_changed_at and now - self.bow_changed_at < 30 then
     list[#list + 1] = "BOW AXIS CORRECTED: HEADING NOW TRUE"
   end
-  if flying and self.hdg.sway_active and not self.motion:sway_ok() then
-    list[#list + 1] = "SIDEWAYS RCS: LEARNING"
+  if flying and self.hdg.sway_active and not (self.motion.frame_ok or self.bow_learned) then
+    list[#list + 1] = "BOW AXIS NOT CONFIRMED YET: SIDEWAYS BRAKE GENTLE"
   end
   if s and math.abs(s.yaw_rate) > 3 * self.cfg.heading.max_rate then
     list[#list + 1] = "SPINNING " .. util.fmt(s.yaw_rate, 0) .. " DEG/S"

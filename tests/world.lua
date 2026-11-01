@@ -20,7 +20,6 @@ W.DEFAULTS = {
   rcs_accel = 0.6,      -- sway m/s^2 from one RCS at 2500 RPM
   yaw_accel = 2.0,      -- deg/s^2 from one RCS at 2500 RPM
   yaw_damp = 0.15,
-  rcs_reverse = false,  -- true: positive RPM pushes instead of pulls
   misalign = 0.0,       -- deg/s^2 of yaw per m/s^2 of rear thrust
   dip = 0.0,            -- deg/s^2 nose down per m/s^2 of rear thrust
   pitch_spring = 0.4,
@@ -111,6 +110,8 @@ function W.new(controllers, opts, gravity)
         assert(type(v) == "number", "setTargetSpeed expects a number")
         assert(v == math.floor(v), "setTargetSpeed should get an integer, got " .. v)
         assert(math.abs(v) <= c.cap, id .. " over cap: " .. v)
+        -- The RCS pullers only ever pull: positive RPM (or 0).
+        if id ~= "lift" and id ~= "thrust" then assert(v >= 0, id .. " given negative RPM: " .. v) end
         if v ~= w.cmd[id] then
           -- Create detaches the controller and re-attaches it: every block
           -- that gets rotation through it (its own props, and every
@@ -200,7 +201,7 @@ function W.new(controllers, opts, gravity)
     end
     local a_lift = k_lift * rho * f("lift") - gravity
     local a_thr = k_thrust * rho * f("thrust")
-    local rc = (p.rcs_reverse and -1 or 1) / (2500 * 2500)
+    local rc = 1 / (2500 * 2500)
     local bs, bp = f("bow_stbd") * rc, f("bow_port") * rc
     local ss, sp = f("stern_stbd") * rc, f("stern_port") * rc
     local a_side = p.rcs_accel * (bs + ss - bp - sp) * rho / sea

@@ -103,8 +103,8 @@ function M.run(cfg, opts)
       },
       hdg = {
         err = ap.hdg.err, r_cmd = ap.hdg.r_cmd,
-        yaw_b = ap.hdg.yaw.est.t[1], yaw_ok = ap.hdg.yaw.ok,
-        sway_auth = select(2, ap.motion:strafe_drift(last_s)), sway_ok = ap.motion:sway_ok(),
+        yaw_b = ap.hdg:authority(),
+        sway_auth = ap.motion:sway_authority(), frame_ok = ap.motion.frame_ok or ap.bow_learned,
         sway_active = ap.hdg.sway_active, drift = ap.hdg.drift,
         bow = util.axis_name(tel.forward), bow_learned = ap.bow_learned,
       },

@@ -9,24 +9,22 @@
 -- strafe a same-side pair (starboard: bow stbd + stern stbd), and any blend
 -- gives exactly 2u of turn and 2s of sway.
 --
--- The turning authority is learned in flight, sign included: every 0.5 s the
+-- Positive RPM pulls on all four corners (checked in game with DEBUG), so the
+-- directions are fixed: only the turning strength is learned. Every 0.5 s the
 -- measured yaw acceleration is fitted to yaw_accel = b * u - d * yaw_rate
--- (u = turn force the props are really applying). Commands are computed as an
--- acceleration and divided by b. Until the direction has been confirmed by a
--- few samples, the turn is held to probe_limit.
+-- (u = turn force the props are really applying), with b kept positive.
+-- Commands are computed as an acceleration and divided by b.
 --
 -- Heading: bearing error sets a yaw-rate command; a PI loop on yaw rate gives
 -- the yaw acceleration. The integral holds off steady torques such as a rear
 -- thrust line that misses the centre of mass. A correction starts past the
 -- deadzone and stops within settle_deg; in between the learned trim is held.
 --
--- Sideslip: the direction a sway force really moves the hull, and how hard,
--- are learned by ap2/motion.lua; the brake works along that direction, so it
--- does not depend on the configured frame or on which way the pullers act.
--- Drift past sway_engage starts the brake, which runs until the drift is
--- under sway_settle; the brake also stops early when the props' remaining
--- spin will finish the job (they take over a second to spin down). Heading
--- has first call on the RCS; sway gets what is left.
+-- Sideslip: drift along the hull's starboard axis past sway_engage starts a
+-- brake that runs until the drift is under sway_settle; it also stops early
+-- when the props' remaining spin will finish the job (they take over a second
+-- to spin down). The sideways strength comes from ap2/motion.lua. Heading has
+-- first call on the RCS; sway gets what is left.
 local util = require("ap2.util")
 local rls = require("ap2.rls")
 
@@ -37,19 +35,19 @@ M.__index = M
 function M.new(cfg, saved)
   local c = cfg.heading
   local guess = c.yaw_authority
-  local yaw = {
-    -- Wide starting variance: the real authority may be many times the guess.
-    est = rls.new({ guess, 0.1 }, { math.max(100, 100 * guess * guess), 0.25 }, 0.95),
-    ok = false,   -- direction confirmed
-    count = 0,    -- informative samples since the last direction change
-  }
-  if saved and util.finite(saved.yaw_b) and math.abs(saved.yaw_b) >= c.min_authority then
-    yaw.est.t[1], yaw.ok = saved.yaw_b, true
-  end
+  if saved and util.finite(saved.yaw_b) and saved.yaw_b >= c.min_authority then guess = saved.yaw_b end
   return setmetatable({
-    c = c, yaw = yaw, integ = 0, err = 0, r_cmd = 0, win = nil,
+    c = c,
+    -- Wide starting variance: the real strength may be many times the guess.
+    yaw = rls.new({ guess, 0.1 }, { math.max(100, 100 * guess * guess), 0.25 }, 0.95),
+    integ = 0, err = 0, r_cmd = 0, win = nil,
     active = true, sway_active = false, drift = 0,
   }, M)
+end
+
+-- Turning strength: deg/s^2 at full turn force.
+function M:authority()
+  return math.max(self.yaw.t[1], self.c.min_authority)
 end
 
 function M:reset()
@@ -72,26 +70,16 @@ function M:observe(s, u, now)
   local mu, mr = w.u / w.n, w.r / w.n
   if math.abs(mu) < 0.03 and math.abs(mr) < 0.3 then return end
   local l = self.yaw
-  local before = l.est.t[1]
-  l.est:update({ mu, -mr }, (s.yaw_rate - w.r0) / span)
-  if l.est.t[2] < 0 then l.est.t[2] = 0 end
-  local b = l.est.t[1]
-  if util.sign(b) ~= util.sign(before) then
-    l.ok, l.count = false, 0
-  end
-  if math.abs(mu) >= 0.05 then l.count = l.count + 1 end
-  if not l.ok and l.count >= 4 and math.abs(b) >= self.c.min_authority then l.ok = true end
-end
-
-local function signed_floor(b, floor)
-  return (b >= 0 and 1 or -1) * math.max(math.abs(b), floor)
+  l:update({ mu, -mr }, (s.yaw_rate - w.r0) / span)
+  if l.t[1] < self.c.min_authority then l.t[1] = self.c.min_authority end
+  if l.t[2] < 0 then l.t[2] = 0 end
 end
 
 -- Returns the turn force u and the sway force sw, both normalised.
 -- deadzone: bearing error (deg) tolerated before an active correction starts.
--- sway: { drift = m/s along the learned strafe direction, auth = m/s^2 at
--- full sway force, ok = learned, coming = m/s the props' current spin will
--- still add to the drift } or nil to leave sideslip alone.
+-- sway: { drift = m/s toward starboard, auth = m/s^2 at full sway force,
+-- limit = largest sway force allowed, coming = m/s the props' current spin
+-- will still add to the drift } or nil to leave sideslip alone.
 -- pending: turn force the controllers are set to but the props have not yet
 -- reached (they spin up and down at 32 RPM a tick); it adds a lead to the
 -- yaw-rate loop so it does not keep pushing what is already on its way.
@@ -99,10 +87,8 @@ function M:command(s, bearing, dt, deadzone, sway, pending)
   local c = self.c
   local err = util.wrap180(bearing - s.hdg)
   local dist = math.abs(err)
-  local b = self.yaw.est.t[1]
-  local limit = self.yaw.ok and 1 or c.probe_limit
-  local b_eff = signed_floor(b, c.min_authority)
-  local rate = s.yaw_rate + (self.yaw.ok and pending and b * pending * c.yaw_lag or 0)
+  local b = self:authority()
+  local rate = s.yaw_rate + (pending and b * pending * c.yaw_lag or 0)
 
   if self.active then
     if dist < c.settle_deg and math.abs(s.yaw_rate) < c.settle_rate then self.active = false end
@@ -113,20 +99,19 @@ function M:command(s, bearing, dt, deadzone, sway, pending)
   local u
   if not self.active then
     self.r_cmd = 0
-    u = util.clamp(self.integ / b_eff, -limit, limit)
+    u = util.clamp(self.integ / b, -1, 1)
   else
-    local decel = math.min(c.yaw_accel, 0.5 * math.max(math.abs(b), c.min_authority))
-    local max_rate = self.yaw.ok and c.max_rate or 0.5 * c.max_rate
-    local r_cmd = util.sign(err) * math.min(max_rate, c.bearing_gain * dist, math.sqrt(2 * decel * dist))
+    local decel = math.min(c.yaw_accel, 0.5 * b)
+    local r_cmd = util.sign(err) * math.min(c.max_rate, c.bearing_gain * dist, math.sqrt(2 * decel * dist))
     local r_err = r_cmd - rate
     local int_gain = c.int_gain
     if s.gs > c.high_speed then int_gain = int_gain * c.high_speed_gain end
     local grown = util.clamp(self.integ + int_gain * r_err * dt, -c.int_limit, c.int_limit)
     -- No wind-up while the output is pinned at its limit.
-    local u_try = (grown + c.rate_gain * r_err) / b_eff
-    if math.abs(u_try) < limit or math.abs(grown) < math.abs(self.integ) then self.integ = grown end
+    local u_try = (grown + c.rate_gain * r_err) / b
+    if math.abs(u_try) < 1 or math.abs(grown) < math.abs(self.integ) then self.integ = grown end
     self.r_cmd = r_cmd
-    u = util.clamp((self.integ + c.rate_gain * r_err) / b_eff, -limit, limit)
+    u = util.clamp((self.integ + c.rate_gain * r_err) / b, -1, 1)
   end
   self.err = err
 
@@ -144,7 +129,7 @@ function M:command(s, bearing, dt, deadzone, sway, pending)
     end
     if self.sway_active then
       local auth = math.max(sway.auth, c.min_sway_authority)
-      local slimit = sway.ok and 1 or c.probe_limit
+      local slimit = sway.limit or 1
       sw = util.clamp(-c.sway_gain * drift / auth, -slimit, slimit)
       local room = 1 - math.abs(u)
       sw = util.clamp(sw, -room, room)
@@ -177,7 +162,7 @@ function M.mix(u, sw, caps, min_rpm)
 end
 
 function M:saved()
-  return { yaw_b = self.yaw.ok and self.yaw.est.t[1] or nil }
+  return { yaw_b = self.yaw.count > 0 and self:authority() or nil }
 end
 
 return M

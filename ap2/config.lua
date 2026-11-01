@@ -76,7 +76,7 @@ return {
     stress_high = 0.85,   -- increases may not push engine stress past this share of capacity
     stress_quiet = 0.75,  -- below this share a write cannot flip overstress
     foreign_hold = 5,     -- seconds to leave alone a controller something else changed
-    rcs_min_rpm = 150,    -- smaller RCS commands are sent as 0
+    rcs_min_rpm = 100,    -- smaller RCS commands are sent as 0 (finer pulses for a strong RCS)
   },
 
   altitude = {
@@ -138,11 +138,11 @@ return {
     engage_rate = 0.5,    -- deg/s
     high_speed = 20,      -- above this ground speed the heading integral works harder
     high_speed_gain = 2.0,
-    -- RCS authority is learned in flight, direction included. These are the
-    -- first guesses at full RCS; the direction is confirmed within a few seconds.
+    -- Positive RPM pulls on every RCS corner (fixed). Only the strength is
+    -- learned in flight; these are the first guesses at full RCS.
     yaw_authority = 1.0,  -- deg/s^2 of yaw at full RCS
-    min_authority = 0.1,  -- smallest yaw authority believed (deg/s^2)
-    probe_limit = 0.2,    -- RCS share allowed until the direction is confirmed
+    min_authority = 0.1,  -- smallest yaw strength believed (deg/s^2)
+    probe_limit = 0.2,    -- sideways force allowed until the bow axis is confirmed
     -- Sideslip: drift past sway_engage (m/s) is braked with the same-side
     -- pullers until it is under sway_settle, then the sway force rests.
     sway_authority = 0.2, -- first guess: m/s^2 sideways at full RCS

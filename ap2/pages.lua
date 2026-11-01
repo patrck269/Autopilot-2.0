@@ -342,9 +342,10 @@ M.CAL = {
       { "Ship mass", fmt(s.mass, 0) .. " kg" },
       { "Thrust accel", fmt(sp.A, 2) .. " m/s2 at full" },
       { "Drag at 35", fmt(sp.drag35, 2) .. " m/s2" },
-      { "RCS yaw", fmt(st.hdg.yaw_b, 2) .. " deg/s2 at full" .. (st.hdg.yaw_ok and "" or " (learning)") },
-      { "RCS sideways", fmt(st.hdg.sway_auth, 2) .. " m/s2 at full" .. (st.hdg.sway_ok and "" or " (learning)") },
-      { "Bow axis", tostring(st.hdg.bow) .. (st.hdg.bow_learned and " (learned)" or " (config)") },
+      { "RCS yaw", fmt(st.hdg.yaw_b, 2) .. " deg/s2 at full" },
+      { "RCS sideways", fmt(st.hdg.sway_auth, 2) .. " m/s2 at full" },
+      { "Bow axis", tostring(st.hdg.bow) .. (st.hdg.bow_learned and " (learned)"
+        or (st.hdg.frame_ok and " (config, confirmed)" or " (config)")) },
     }
     local y = a.y + 2
     for _, r in ipairs(rows) do

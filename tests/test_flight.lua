@@ -233,9 +233,9 @@ local function lonely_run(sim)
   return sim.w.lonely_max
 end
 
-print("11. RCS pushes on positive RPM (turn direction backwards): no spin")
+print("11. Turn 40 deg in hover: settles, pairs run together")
 do
-  local sim, max_rate, err, late = turn_in_hover({ rcs_reverse = true })
+  local sim, max_rate, err, late = turn_in_hover({})
   check(max_rate < 10, "yaw rate stays under 10 deg/s", string.format("max %.1f", max_rate))
   check(late < HDG_HOVER, "settles on the bearing", string.format("err %.2f, late max %.2f", err, late))
   check(lonely_run(sim) <= 1, "diagonal pairs run together", lonely_run(sim) .. " ticks alone at most")
@@ -367,11 +367,11 @@ do
 end
 
 print("19. Already drifting sideways when HOVER engages: drift cancelled")
-for _, case in ipairs({ { "pullers as assumed", {} }, { "RCS acting backwards", { rcs_reverse = true } } }) do
+do
+  local case = { "starting drift" }
   -- 3 m/s to starboard, hardly any side drag (a VS hull keeps sliding).
   local opts = { y = 150, rpm = { lift = 958 }, psi = 30, v_side = 3, side_drag = 0.02,
     saved = { k = 10 / (plant.rho(62) * 900 * 900) } }
-  for k, v in pairs(case[2]) do opts[k] = v end
   local sim = plant.new(opts)
   sim.cmd("alt", 150)
   sim.cmd("brg", 30)
@@ -385,8 +385,8 @@ for _, case in ipairs({ { "pullers as assumed", {} }, { "RCS acting backwards", 
   check(math.abs(sim.s.v_side) < 0.5, case[1] .. ": and kept there", string.format("%.2f m/s", sim.s.v_side))
   check(worst_hdg < 6, case[1] .. ": heading held while braking", string.format("worst %.2f deg", worst_hdg))
   check(sim.w.peak_flicker() <= 60, case[1] .. ": flicker at or under 60", "peak " .. sim.w.peak_flicker())
-  print(string.format("     %s: drift stopped after %.1f s, sideways authority %.3f", case[1], stopped or -1,
-    select(2, sim.ap.motion:strafe_drift(sim.s))))
+  print(string.format("     drift stopped after %.1f s, sideways strength %.3f m/s2", stopped or -1,
+    sim.ap.motion:sway_authority()))
 end
 
 print("20. frame.forward set wrong: bow axis learned, drift cancelled, cruise works")
