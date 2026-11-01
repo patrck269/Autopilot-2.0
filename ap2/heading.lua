@@ -50,8 +50,11 @@ function M:authority()
   return math.max(self.yaw.t[1], self.c.min_authority)
 end
 
+-- Engaging a mode or switching the bow axis: start the loops afresh.
 function M:reset()
   self.integ = 0
+  self.sway_failed = false
+  self.sway_active = false
 end
 
 -- Learn the turning authority from 0.5 s windows. u is the turn force the
@@ -119,15 +122,23 @@ function M:command(s, bearing, dt, deadzone, sway, pending)
   -- have once the props' current spin has played out.
   local sw = 0
   self.drift = 0
-  if sway then
+  if sway and not self.sway_failed then
     local drift = sway.drift + (sway.coming or 0)
     self.drift = sway.drift
     if self.sway_active then
       if math.abs(drift) < c.sway_settle or math.abs(sway.drift) < c.sway_settle then self.sway_active = false end
     elseif math.abs(sway.drift) > c.sway_engage then
       self.sway_active = true
+      self.sway_t, self.sway_start = 0, math.abs(sway.drift)
     end
     if self.sway_active then
+      -- Guard: braking for a while and the drift has grown? Then the brake
+      -- is pushing the wrong way (wrong bow axis or corner labels): stop.
+      self.sway_t = self.sway_t + dt
+      if self.sway_t > c.sway_guard_time and math.abs(sway.drift) > 1.2 * self.sway_start + 0.2 then
+        self.sway_failed, self.sway_active = true, false
+        return u, 0
+      end
       local auth = math.max(sway.auth, c.min_sway_authority)
       local slimit = sway.limit or 1
       sw = util.clamp(-c.sway_gain * drift / auth, -slimit, slimit)

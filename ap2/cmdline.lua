@@ -12,6 +12,8 @@ M.HELP = {
   "debug       every prop at +15 RPM (drops!)",
   "sync        targets = current alt/heading",
   "recal       forget the hover calibration",
+  "rcs check   find each RCS corner (HOVER)",
+  "rcs apply   use the layout it found",
 }
 
 local MODES = { hover = "HOVER", h = "HOVER", cruise = "CRUISE", c = "CRUISE", stby = "STBY", standby = "STBY", off = "STBY", kill = "KILL", debug = "DEBUG" }
@@ -26,6 +28,11 @@ function M.parse(line)
   if head == "help" or head == "?" then return "help" end
   if MODES[head] then return { c = "mode", v = MODES[head] } end
   if head == "sync" or head == "recal" then return { c = head } end
+  if head == "rcs" then
+    if words[2] == nil or words[2] == "check" then return { c = "rcs_check" } end
+    if words[2] == "apply" then return { c = "rcs_apply" } end
+    return nil, "rcs check | rcs apply"
+  end
   local c = VALUES[head]
   if c then
     local v = tonumber(words[2])

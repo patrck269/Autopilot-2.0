@@ -150,12 +150,22 @@ return {
     sway_gain = 0.3,      -- (m/s^2) per m/s of sideslip
     sway_engage = 0.5,    -- m/s
     sway_settle = 0.15,   -- m/s
+    sway_guard_time = 10, -- s: if the drift has grown after braking this long, the brake stops
     sway_lag = 0.5,       -- s: drift the props' current spin will still add (they spin down slowly)
     yaw_lag = 0.8,        -- s: lead on yaw rate for turn force still spinning up or down
   },
 
   -- DEBUG mode RPM for every controller (written to the block as is).
   debug_rpm = 15,
+
+  -- RCS check (terminal 'rcs check' or SYS RCS CHECK, in HOVER): finds which
+  -- controller is at which corner. Each corner pulls at rpm for 'on' s, then
+  -- coasts while its effect is measured, then the hull settles.
+  rcs_check = {
+    rpm = 1000, on = 4, coast = 2, settle = 4,
+    min_v = 0.03,         -- m/s: smaller changes in speed are not a reading
+    min_deg = 0.1,        -- degrees: the two corners on a side must turn the hull this differently
+  },
 
   -- Files on the flight computer.
   cal_file = "/ap2_cal.dat",

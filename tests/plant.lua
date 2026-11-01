@@ -20,8 +20,16 @@ function P.new(opts)
   local w = world.new(cfg.controllers, opts, cfg.gravity)
   w.t, w.tick = 0, 0
 
+  -- Wrap controllers by peripheral name, after any saved RCS layout, like
+  -- the flight program does.
+  local byname = {}
+  for id, c in pairs(cfg.controllers) do byname[c.name] = w.devices[id] end
+  if opts.saved then actuators.apply_layout(cfg, opts.saved.rcs_map) end
+  local devices = {}
+  for id, c in pairs(cfg.controllers) do devices[id] = byname[c.name] end
+
   local tel = telemetry.new(cfg, { ship = w.ship, aero = w.aero, clock = function() return w.t end })
-  local bank = actuators.new(cfg, w.devices)
+  local bank = actuators.new(cfg, devices)
   bank:seed()
   local ap = autopilot.new(cfg, opts.saved, tel.rho_at(62), tel)
   local sim = { w = w, p = w.p, cfg = cfg, ap = ap, bank = bank, tel = tel }

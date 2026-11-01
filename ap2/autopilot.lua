@@ -15,6 +15,7 @@ local altitude = require("ap2.altitude")
 local speed = require("ap2.speed")
 local heading = require("ap2.heading")
 local motion = require("ap2.motion")
+local rcscheck = require("ap2.rcscheck")
 
 local M = {}
 M.__index = M
@@ -39,6 +40,8 @@ function M.new(cfg, saved, sea_rho, tel)
     hdg = heading.new(cfg, saved),
     motion = motion.new(cfg, tel),
     bow_learned = saved ~= nil and saved.bow ~= nil,
+    rcs_map = saved and saved.rcs_map or nil, -- RCS layout from an earlier check (applied at start-up)
+    rcs_found = nil,                           -- a differing layout found by the last check
     sea_rho = sea_rho,
     caps = {},
     accel_limited_since = nil,
@@ -57,6 +60,10 @@ end
 function M:engage(mode, s)
   local prev = self.mode
   self.mode = mode
+  if self.check then
+    self.check = nil
+    self:log("RCS CHECK STOPPED")
+  end
   -- Learning pauses in KILL and DEBUG; start fresh windows either side.
   self.alt.win, self.spd.win, self.hdg.win, self.motion.win = nil, nil, nil, nil
   if mode == "HOVER" or mode == "CRUISE" then
@@ -116,6 +123,20 @@ function M:command(msg, s)
     self.tgt.brg = util.round(s.hdg) % 360
     self:log("SYNC")
     return true, "targets set to current altitude and heading"
+  elseif c == "rcs_check" then
+    if self.mode ~= "HOVER" or self.alt.grounded then
+      return false, "rcs check runs in HOVER, in the air"
+    end
+    self.check = rcscheck.new(self.cfg)
+    self.rcs_found = nil
+    self:log("RCS CHECK START")
+    return true, "rcs check: one corner at a time, about 45 s"
+  elseif c == "rcs_apply" then
+    if not self.rcs_found then return false, "nothing to apply: run rcs check first" end
+    self.rcs_map = self.rcs_found
+    self.rcs_found = nil
+    self:log("RCS LAYOUT SAVED")
+    return true, "rcs layout saved; the flight computer restarts with it"
   elseif c == "recal" then
     -- Holding steady on a spinning lift: that RPM is the hover. Otherwise start
     -- again from the default guess and learn in flight.
@@ -172,13 +193,17 @@ function M:step(s, now, dt, bank)
       self.alt:observe(s, lift_prop, now, want_up)
     end
     self.spd:observe(s, thr_f, now)
-    self.hdg:observe(s, u_now, now)
-    self.motion:observe(s, thr_f, sw_now, now)
+    if self.check then
+      -- Single corners at full are not normal flight: learn nothing from them.
+      self.hdg.win, self.motion.win = nil, nil
+    else
+      self.hdg:observe(s, u_now, now)
+      self.motion:observe(s, thr_f, sw_now, now)
+    end
   end
 
-  -- The rear thrusters or the strafe pairs showed the bow is on another axis
-  -- than configured: switch to it, keep pointing where the ship points now,
-  -- relearn speed.
+  -- The rear thrusters showed the bow is on another axis than configured:
+  -- switch to it, keep pointing where the ship points now, relearn speed.
   local bow = self.motion.bow
   if bow and util.dot(bow, self.tel.forward) < 0.9 then
     local delta = util.wrap180(motion.plane_angle(self.tel, bow) - motion.plane_angle(self.tel, self.tel.forward))
@@ -195,6 +220,19 @@ function M:step(s, now, dt, bank)
     out.thrust = 0
     for _, id in ipairs(RCS) do out[id] = 0 end
     return out
+  end
+
+  -- RCS check: one corner at a time; altitude held, everything else rests.
+  if self.check then
+    local log = function(text) self:log(text) end
+    local rpm = self.check:step(s, now, log)
+    if rpm then
+      out.lift = self.alt:command(s, self.tgt.alt, dt, self.caps.lift)
+      out.thrust = 0
+      for _, id in ipairs(RCS) do out[id] = rpm[id] end
+      return out
+    end
+    self:finish_check()
   end
 
   out.lift = self.alt:command(s, self.tgt.alt, dt, self.caps.lift)
@@ -239,12 +277,22 @@ function M:alerts(s, now)
   local flying = self.mode == "HOVER" or self.mode == "CRUISE"
   if self.rcs_full_since and now - self.rcs_full_since > 3 then
     list[#list + 1] = "RCS AT FULL: HEADING NOT HELD"
+    if self.hdg:authority() <= self.cfg.heading.min_authority * 1.5 then
+      list[#list + 1] = "TURN COMMANDS DO NOT TURN THE SHIP: RUN 'rcs check'"
+    end
   end
+  if self.check then
+    list[#list + 1] = "RCS CHECK: TESTING " .. (self.check:testing() or "..."):upper()
+  end
+  if self.rcs_found then list[#list + 1] = "RCS LAYOUT DIFFERS FROM CONFIG: TYPE 'rcs apply'" end
   if self.bow_changed_at and now - self.bow_changed_at < 30 then
     list[#list + 1] = "BOW AXIS CORRECTED: HEADING NOW TRUE"
   end
   if flying and self.hdg.sway_active and not (self.motion.frame_ok or self.bow_learned) then
     list[#list + 1] = "BOW AXIS NOT CONFIRMED YET: SIDEWAYS BRAKE GENTLE"
+  end
+  if flying and self.hdg.sway_failed then
+    list[#list + 1] = "SIDEWAYS BRAKE STOPPED: IT MADE THE DRIFT WORSE (RUN 'rcs check')"
   end
   if s and math.abs(s.yaw_rate) > 3 * self.cfg.heading.max_rate then
     list[#list + 1] = "SPINNING " .. util.fmt(s.yaw_rate, 0) .. " DEG/S"
@@ -266,7 +314,37 @@ function M:saved()
   return {
     k = self.alt.k, A = self.spd.A, Dn = self.spd.Dn, yaw_b = h.yaw_b,
     bow = self.bow_learned and { x = f.x, y = f.y, z = f.z } or nil,
+    rcs_map = self.rcs_map,
   }
+end
+
+-- An RCS check has finished: compare what it found with the controllers in use.
+function M:finish_check()
+  local chk = self.check
+  self.check = nil
+  self.hdg:reset()
+  local layout, why = chk:layout()
+  if not layout then
+    self:log("RCS CHECK UNCLEAR: " .. why)
+    return
+  end
+  local same = true
+  local map = {}
+  for corner, id in pairs(layout) do
+    if corner ~= id then same = false end
+    map[corner] = self.cfg.controllers[id].name
+  end
+  if same then
+    self:log("RCS LAYOUT MATCHES CONFIG")
+  else
+    self.rcs_found = map
+    for _, corner in ipairs(RCS) do
+      if layout[corner] ~= corner then
+        self:log(corner:upper() .. " IS " .. self.cfg.controllers[layout[corner]].label:match("^(RSC%d+)"))
+      end
+    end
+    self:log("RCS LAYOUT DIFFERS: TYPE 'rcs apply'")
+  end
 end
 
 return M

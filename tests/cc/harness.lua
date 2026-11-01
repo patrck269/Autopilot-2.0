@@ -237,7 +237,9 @@ local function both_script()
   end
   check(reached ~= nil, "ship lifts off and holds Y 120", string.format("y %.2f after %s s", w.y, tostring(reached)))
   sleep(5)
-  check(math.abs(w.y - 120) < 1, "still at 120 five seconds later", string.format("y %.2f", w.y))
+  -- HOVER holds the elevation steady until the hull drifts past hold_release.
+  local band = cfg.altitude.hold_release + 0.5
+  check(math.abs(w.y - 120) < band, "still at 120 five seconds later (within the hold band)", string.format("y %.2f", w.y))
 
   type_line("brg 90")
   type_line("spd 20")

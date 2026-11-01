@@ -1,11 +1,11 @@
 -- Learns how the hull really moves, in its own horizontal plane (telemetry
 -- axes e1, e2, fixed to the hull):
---   * the rear thrusters push toward the bow (positive RPM) and the starboard
---     pullers pull toward starboard (positive RPM, checked in game). So the
---     direction each of them really moves the hull shows where the bow is.
---     Once that is clear it is snapped to the block grid; if it differs from
---     the configured frame.forward the autopilot switches to it, and if it
---     agrees the frame counts as confirmed
+--   * the rear thrusters push toward the bow (positive RPM). The direction
+--     they really move the hull shows where the bow is. Once that is clear it
+--     is snapped to the block grid; if it differs from the configured
+--     frame.forward the autopilot switches to it, and if it agrees the frame
+--     counts as confirmed. (The RCS is not used for this: if its corner
+--     labels were wrong it would point the wrong way.)
 --   * the sideways strength of the RCS (m/s^2 at full sway force)
 -- Every 0.5 s the hull-plane acceleration is fitted, per axis k, to
 --     a_k = h_k * thrust + g_k * sway - d_k * v_k
@@ -22,7 +22,7 @@ local atan2 = math.atan2 or math.atan
 
 -- tel: telemetry (for its plane axes and current forward).
 function M.new(cfg, tel)
-  local self = setmetatable({ cfg = cfg, tel = tel, win = nil, n_thrust = 0, n_sway = 0,
+  local self = setmetatable({ cfg = cfg, tel = tel, win = nil, n_thrust = 0,
     bow = nil, frame_ok = false, votes = {} }, M)
   local f1, f2 = tel.plane(tel.forward)
   local r1, r2 = -f2, f1
@@ -59,12 +59,6 @@ function M:observe(s, thrust, sway, now)
     -- Thrust pushes toward the bow.
     self:vote("thrust", self.fit[1].t[1], self.fit[2].t[1], self.n_thrust, c.bow_min_accel)
   end
-  if math.abs(msw) >= 0.05 then
-    self.n_sway = self.n_sway + 1
-    -- Sway pushes toward starboard; the bow is 90 deg anticlockwise of that.
-    local g1, g2 = self.fit[1].t[2], self.fit[2].t[2]
-    self:vote("sway", g2, -g1, self.n_sway, self.cfg.heading.min_sway_authority)
-  end
 end
 
 -- One source's view of the bow axis (b1, b2 in hull-plane coordinates). Once
@@ -90,8 +84,7 @@ function M:vote(src, b1, b2, n, min_mag)
   local bow = { x = c1 * t.e1.x + c2 * t.e2.x, y = c1 * t.e1.y + c2 * t.e2.y, z = c1 * t.e1.z + c2 * t.e2.z }
   if util.dot(bow, t.forward) > 0.9 then
     self.frame_ok = true
-  elseif src == "thrust" or not (self.votes.thrust and self.votes.thrust.streak >= c.bow_streak) then
-    -- The rear thrusters' view wins if both have decided.
+  else
     self.bow = bow
   end
 end

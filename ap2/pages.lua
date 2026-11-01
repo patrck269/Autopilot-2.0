@@ -360,13 +360,28 @@ M.CAL = {
 
 ------------------------------------------------------------------ SYS
 M.SYS = {
-  id = "SYS", title = "Status, alerts, kill and debug",
+  id = "SYS", title = "Status, alerts, RCS check, kill and debug",
   osb = function(ctx)
     local armed = ctx.arm.kill and ctx.now - ctx.arm.kill < 3
-    local dbg_armed = ctx.arm.debug and ctx.now - ctx.arm.debug < 3
     local mode = ctx.st and ctx.st.mode
+    local rcs_armed = ctx.arm.rcs and ctx.now - ctx.arm.rcs < 3
+    local found = ctx.st and ctx.st.hdg and ctx.st.hdg.rcs_found
+    local dbg_armed = ctx.arm.debug and ctx.now - ctx.arm.debug < 3
     return {
       T1 = { label = "STBY", lit = mode == "STBY", action = function(x) x.send("mode", "STBY") end },
+      -- The check pulls one corner at a time (the ship strafes and turns a
+      -- little), so it needs a second press too.
+      T2 = { label = rcs_armed and "CONF\nCHECK" or "RCS\nCHECK", warn = rcs_armed,
+        lit = ctx.st and ctx.st.hdg and ctx.st.hdg.rcs_checking,
+        action = function(x)
+          if rcs_armed then
+            x.arm.rcs = nil
+            x.send("rcs_check")
+          else
+            x.arm.rcs = x.now
+          end
+        end },
+      T4 = { label = "RCS\nAPPLY", lit = found, action = function(x) x.send("rcs_apply") end },
       -- DEBUG drops the elevation to debug RPM too, so it needs a second press.
       T3 = { label = dbg_armed and "CONF\nDEBUG" or "DEBUG", lit = mode == "DEBUG", warn = dbg_armed,
         action = function(x)

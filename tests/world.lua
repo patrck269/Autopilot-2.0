@@ -202,8 +202,11 @@ function W.new(controllers, opts, gravity)
     local a_lift = k_lift * rho * f("lift") - gravity
     local a_thr = k_thrust * rho * f("thrust")
     local rc = 1 / (2500 * 2500)
-    local bs, bp = f("bow_stbd") * rc, f("bow_port") * rc
-    local ss, sp = f("stern_stbd") * rc, f("stern_port") * rc
+    -- p.at: which controller's props really sit at each corner (default: the
+    -- one named for it). Lets a test build a hull whose labels are wrong.
+    local function at(position) return f(p.at and p.at[position] or position) * rc end
+    local bs, bp = at("bow_stbd"), at("bow_port")
+    local ss, sp = at("stern_stbd"), at("stern_port")
     local a_side = p.rcs_accel * (bs + ss - bp - sp) * rho / sea
     local yaw_acc = p.yaw_accel * ((bs - bp) - (ss - sp)) * rho / sea
       - p.yaw_damp * w.r + p.misalign * a_thr

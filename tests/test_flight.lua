@@ -402,13 +402,18 @@ for _, case in ipairs({ { "90 deg off", { x = 0, y = 0, z = -1 } }, { "180 deg o
     local a = math.rad(sim.w.psi)
     return sim.w.vx * math.cos(a) + sim.w.vz * math.sin(a)
   end
+  local worst = 0
   sim.run(90, function(s2)
     local stb = s2.w.cmd.bow_stbd > 0 and s2.w.cmd.stern_stbd > 0
     local prt = s2.w.cmd.bow_port > 0 and s2.w.cmd.stern_port > 0
     local side = stb and 1 or (prt and -1 or 0)
     if side ~= 0 and side ~= last then switches = switches + 1; last = side end
+    worst = math.max(worst, math.abs(true_side()))
   end)
-  check(math.abs(true_side()) < 0.5, case[1] .. ": real sideways drift cancelled", string.format("%.2f m/s", true_side()))
+  -- 90 deg off: the drift shows up as fore/aft, the rear thrusters brake it
+  -- and reveal the bow. 180 deg off: a sideways drift can't reveal it, the
+  -- brake pushes the wrong way and its guard stops it.
+  check(worst < 4, case[1] .. ": the drift is never made much worse", string.format("worst %.2f m/s (started 3)", worst))
   check(switches <= 4, case[1] .. ": brake does not flap port/starboard", switches .. " side changes")
   -- The bow is learned from the rear thrusters' push, so it may need a cruise.
   local brg = util.round(sim.s.hdg) % 360
@@ -426,6 +431,72 @@ for _, case in ipairs({ { "90 deg off", { x = 0, y = 0, z = -1 } }, { "180 deg o
   check(math.abs(true_fwd - 15) < 1.5, case[1] .. ": cruises at 15 m/s along the real bow", string.format("%.2f m/s", true_fwd))
   check(top < 18, case[1] .. ": no runaway before the axis is learned", string.format("top %.1f m/s", top))
   check(sim.peak_flicker() <= 60, case[1] .. ": flicker at or under 60", "peak " .. sim.peak_flicker())
+  -- Back to a hover with the right axis: any drift is braked out.
+  sim.cmd("mode", "HOVER")
+  sim.run(90)
+  check(math.abs(true_side()) < 0.5, case[1] .. ": sideways drift cancelled once the axis is known",
+    string.format("%.2f m/s", true_side()))
+end
+
+print("21. Corner labels wrong (stern pair swapped): RCS check finds it, apply fixes the hover")
+do
+  local swapped = { stern_port = "stern_stbd", stern_stbd = "stern_port" }
+  local base = { y = 150, rpm = { lift = 958 }, psi = 30, saved = { k = 10 / (plant.rho(62) * 900 * 900) } }
+  local function hull(at, saved)
+    local o = {}
+    for k, v in pairs(base) do o[k] = v end
+    o.at, o.saved = at, saved or base.saved
+    return plant.new(o)
+  end
+  local function hover_with_kick(sim)
+    sim.cmd("alt", 150)
+    sim.cmd("brg", 30)
+    sim.cmd("mode", "HOVER")
+    sim.w.r = -1.5 -- a small yaw kick as it lifts
+    local late = 0
+    sim.run(90, function(s2, s)
+      if s2.w.t > 70 then late = math.max(late, math.abs(util.wrap180(s2.w.psi - 30))) end
+    end)
+    return late
+  end
+  local function events(sim) return table.concat(sim.ap.events, " | ") end
+
+  local bad = hull(swapped)
+  local late = hover_with_kick(bad)
+  check(late > HDG_HOVER, "with the labels wrong the heading is not held (the in-game symptom)",
+    string.format("off %.1f deg, learned turn %.3f", late, bad.ap.hdg:authority()))
+
+  local sim = hull(swapped)
+  sim.cmd("alt", 150)
+  sim.cmd("mode", "HOVER")
+  sim.run(5)
+  sim.cmd("rcs_check")
+  sim.run(60)
+  check(sim.ap.check == nil, "check finishes", events(sim))
+  local found = sim.ap.rcs_found
+  check(found ~= nil and found.stern_stbd == "Create_RotationSpeedController_15"
+    and found.stern_port == "Create_RotationSpeedController_12"
+    and found.bow_port == "Create_RotationSpeedController_13" and found.bow_stbd == "Create_RotationSpeedController_14",
+    "finds RSC15 at stern starboard and RSC12 at stern port", events(sim))
+  check(math.abs(sim.w.y - 150) < 2, "altitude held during the check", string.format("y %.2f", sim.w.y))
+  sim.cmd("rcs_apply")
+  local saved = sim.ap:saved()
+  check(saved.rcs_map ~= nil, "layout is saved with the calibration")
+
+  local fixed = hull(swapped, saved)
+  check(fixed.cfg.controllers.stern_stbd.label == "RSC15 STRN STBD", "restart uses the saved layout",
+    fixed.cfg.controllers.stern_stbd.label)
+  late = hover_with_kick(fixed)
+  check(late < HDG_HOVER, "after apply the heading is held", string.format("off %.1f deg, learned turn %.3f", late, fixed.ap.hdg:authority()))
+
+  local good = hull(nil)
+  good.cmd("alt", 150)
+  good.cmd("mode", "HOVER")
+  good.run(5)
+  good.cmd("rcs_check")
+  good.run(60)
+  check(good.ap.rcs_found == nil and events(good):find("MATCHES CONFIG", 1, true) ~= nil,
+    "a correctly labelled hull reports a match", events(good))
 end
 
 print(failures == 0 and "ALL FLIGHT CHECKS PASSED" or (failures .. " FLIGHT CHECK(S) FAILED"))

@@ -33,6 +33,12 @@ function M.run(cfg, opts)
   local env = { peripheral = P, ship = ship, aero = aero }
   local warnings
 
+  -- An RCS layout found by an earlier RCS check overrides the config names.
+  local saved = store.load(cfg.cal_file)
+  if saved and actuators.apply_layout(cfg, saved.rcs_map) then
+    print("RCS layout from the last RCS check is in use")
+  end
+
   -- 1. Required modems and peripherals. Nothing is driven until all are present.
   while true do
     local errors
@@ -53,7 +59,6 @@ function M.run(cfg, opts)
   local bank = actuators.new(cfg, devices)
   bank:seed()
   local tel = telemetry.new(cfg, { ship = ship, aero = aero, clock = os.clock })
-  local saved = store.load(cfg.cal_file)
   local ap = autopilot.new(cfg, saved, tel.rho_at(62), tel)
   local ship_id = ship.getId and ship.getId() or nil
   local others = {} -- other flight computers heard on this ship: id -> time
@@ -107,6 +112,7 @@ function M.run(cfg, opts)
         sway_auth = ap.motion:sway_authority(), frame_ok = ap.motion.frame_ok or ap.bow_learned,
         sway_active = ap.hdg.sway_active, drift = ap.hdg.drift,
         bow = util.axis_name(tel.forward), bow_learned = ap.bow_learned,
+        rcs_checking = ap.check ~= nil, rcs_found = ap.rcs_found ~= nil, rcs_layout = ap.rcs_map ~= nil,
       },
       rsc = bank:snapshot(now),
       eng = gauges,
@@ -117,11 +123,19 @@ function M.run(cfg, opts)
     }
   end
 
+  local reboot_at = nil
   local function handle(msg, from)
     if type(msg) ~= "table" then return end
     if msg.ship and ship_id and msg.ship ~= ship_id then return end
     local ok, text = ap:command({ c = msg.c, v = msg.v }, last_s)
     if ok and msg.c == "mode" and msg.v == "KILL" then bank:kill() end
+    if ok and msg.c == "rcs_apply" then
+      -- The layout picks which peripheral drives which corner: save it and
+      -- restart so every controller is wrapped under its new corner. The lift
+      -- keeps spinning, so the restarted program takes over in HOVER.
+      store.save(cfg.cal_file, ap:saved())
+      reboot_at = os.clock() + 1
+    end
     message = text
     if from and from ~= "terminal" then link:reply(from, { ok = ok, text = text, seq = msg.seq }) end
     link:send_status(status(os.clock()))
@@ -159,6 +173,7 @@ function M.run(cfg, opts)
           link:send_status(status(now))
           sent_at = now
         end
+        if reboot_at and now >= reboot_at then os.reboot() end
         if now >= save_at then
           save_at = now + 30
           local cur = ap:saved()

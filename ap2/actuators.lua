@@ -53,6 +53,31 @@ local GROUP = {
   bow_port = "rcs", bow_stbd = "rcs", stern_port = "rcs", stern_stbd = "rcs",
 }
 
+local CORNER_NAME = {
+  bow_port = "BOW PORT", bow_stbd = "BOW STBD", stern_port = "STRN PORT", stern_stbd = "STRN STBD",
+}
+M.CORNER_NAME = CORNER_NAME
+
+-- Use the RCS layout found by an RCS check: map[corner] = peripheral name of
+-- the controller whose props really sit at that corner. Changes cfg in place
+-- (call before wrapping devices). Returns true if anything moved.
+function M.apply_layout(cfg, map)
+  if type(map) ~= "table" then return false end
+  local known = {}
+  for _, id in ipairs(RCS) do known[cfg.controllers[id].name] = true end
+  for _, id in ipairs(RCS) do
+    if type(map[id]) ~= "string" or not known[map[id]] then return false end
+  end
+  local moved = false
+  for _, id in ipairs(RCS) do
+    local c = cfg.controllers[id]
+    if c.name ~= map[id] then moved = true end
+    c.name = map[id]
+    c.label = "RSC" .. (map[id]:match("(%d+)$") or "?") .. " " .. CORNER_NAME[id]
+  end
+  return moved
+end
+
 -- devices: map channel -> wrapped controller (nil when missing)
 function M.new(cfg, devices)
   local self = setmetatable({

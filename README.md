@@ -39,7 +39,21 @@ The role can also be changed later in `ap2/config.lua`, or passed to the program
 
 At start-up each program checks every modem and peripheral it needs. Anything missing is listed on the terminal, and on the MFDs when they can be drawn. The flight computer writes nothing to the controllers until the list is clear, then starts on its own as soon as the missing device is attached.
 
-Before the first flight, check controller direction with DEBUG (every prop at +15 RPM): positive RPM must pull on all four RCS corners and push the rear thrusters forward. A controller that turns backwards gets `sign = -1`. The bow axis doesn't have to be right in `frame.forward` (default +X). The flight computer checks it against which way the rear thrusters push the hull, and which way the starboard pullers pull it. Either one is enough. It snaps the result to the block grid; if that differs, it switches to it while keeping the ship pointing where it is, and remembers it. SYS shows "BOW AXIS CORRECTED: HEADING NOW TRUE", and CAL shows the axis as learned, or as "config, confirmed". Until the axis is confirmed, the sideways brake is held to 20%.
+Before the first flight, check controller direction with DEBUG (every prop at +15 RPM): positive RPM must pull on all four RCS corners and push the rear thrusters forward. A controller that turns backwards gets `sign = -1`. Then run `rcs check` once in a hover (below): DEBUG shows which way each corner pulls, but not *where* each controller sits.
+
+The bow axis doesn't have to be right in `frame.forward` (default +X). The flight computer checks it against which way the rear thrusters push the hull (not the RCS, which would mislead it if its corner labels were wrong). It snaps the result to the block grid; if that differs, it switches to it while keeping the ship pointing where it is, and remembers it. SYS shows "BOW AXIS CORRECTED: HEADING NOW TRUE", and CAL shows the axis as learned, or as "config, confirmed". Until the axis is confirmed, the sideways brake is held to 20%.
+
+### RCS check
+
+If the heading isn't held and the ship strafes when it should turn, the RCS corner labels are probably wrong. For example, if RSC 15 really sits at stern *starboard*, the "right turn" pair (bow starboard + stern port) pulls both starboard corners and the ship strafes. SYS then shows "TURN COMMANDS DO NOT TURN THE SHIP: RUN 'rcs check'".
+
+In HOVER, type `rcs check` (or SYS: RCS CHECK, then CONF CHECK). Each of the four controllers pulls at 1000 RPM for 4 s, one at a time, about 45 s in all. The elevation holds altitude; heading, sideslip and rear thrust rest. For each controller it measures which way the hull slides and turns. The side it slides toward is its side. Of the two on a side, the bow one swings the nose toward that side more than the stern one does. The SYS event log shows each reading and the result:
+
+- "RCS LAYOUT MATCHES CONFIG": nothing to do.
+- "RCS LAYOUT DIFFERS", with e.g. "STERN_STBD IS RSC15": type `rcs apply` (or SYS: RCS APPLY). The layout is saved with the calibration and the flight computer restarts with it. The lift keeps spinning, so it takes over in HOVER. The saved layout overrides the controller names in `ap2/config.lua` and survives reinstalls.
+- "RCS CHECK UNCLEAR": a corner didn't move the hull clearly; nothing changes.
+
+If the sideways brake runs for 10 s and the drift has grown, it stops and SYS shows "SIDEWAYS BRAKE STOPPED: IT MADE THE DRIFT WORSE". That means a wrong bow axis or wrong corner labels. It starts again on the next HOVER or CRUISE engagement.
 
 ## Flying
 
@@ -55,6 +69,8 @@ Before the first flight, check controller direction with DEBUG (every prop at +1
 | `debug` | SYS: DEBUG then CONF DEBUG | Every controller at +15 RPM as written to the block (config `sign` not applied), to see which way each prop pushes. **The elevation drops to 15 RPM too, so an airborne ship falls.** Learning is paused. Leave with any other mode |
 | `sync` | PFD: SYNC | Targets become the current altitude and heading |
 | `recal` | CAL: RECAL then CONF | Forget the hover calibration. In a steady hover it restarts from the current RPM |
+| `rcs check` | SYS: RCS CHECK then CONF CHECK | In HOVER: find which controller sits at which RCS corner (see RCS check) |
+| `rcs apply` | SYS: RCS APPLY | Use the layout the check found; saved, then the flight computer restarts |
 
 If the flight computer reboots while the elevation is spinning, it takes over in HOVER at the current altitude.
 
@@ -74,7 +90,7 @@ Each monitor is one MFD with option-select buttons around the edge. Top-row and 
 | HSI | Heading-up compass rose with bearing bug and track, ground speed, drift, X/Z position |
 | ENG | Main engine RPM, stress against capacity, each controller's applied and desired RPM against its cap. Orange: held by the stress limit. Magenta: changed by another computer. Red: missing |
 | CAL | Ground or airborne, sample count, hover RPM here and at target, air density, lift constant, altitude trim, mass, learned thrust and drag, learned RCS turning and sideways strength, bow axis (learned or config) |
-| SYS | Link health, start-up errors and warnings, live alerts, event log, DEBUG, KILL |
+| SYS | Link health, start-up errors and warnings, live alerts, event log (RCS check results), RCS CHECK, RCS APPLY, DEBUG, KILL |
 | UFC | Keypad: type a number, then ALT, BRG, or SPD SET |
 
 ## How it flies
