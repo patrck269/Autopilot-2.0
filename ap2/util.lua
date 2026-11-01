@@ -72,13 +72,17 @@ function M.len(a)
   return math.sqrt(M.dot(a, a))
 end
 
--- Rotate vector v by quaternion q = {x, y, z, w} (normalised here).
+-- Rotate vector v by quaternion q (normalised here). q is either CC:VS's
+-- quaternion object (vector part q.v, scalar part q.a, what ship.getQuaternion
+-- returns in game) or a plain {x, y, z, w}.
 function M.rotate(q, v)
-  local n = math.sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w)
+  local u = q.v or q
+  local qx, qy, qz, qw = u.x, u.y, u.z, q.a or q.w
+  local n = math.sqrt(qx * qx + qy * qy + qz * qz + qw * qw)
   if n <= 0 or not M.finite(n) then
     return { x = v.x, y = v.y, z = v.z }
   end
-  local qx, qy, qz, qw = q.x / n, q.y / n, q.z / n, q.w / n
+  qx, qy, qz, qw = qx / n, qy / n, qz / n, qw / n
   local tx = 2 * (qy * v.z - qz * v.y)
   local ty = 2 * (qz * v.x - qx * v.z)
   local tz = 2 * (qx * v.y - qy * v.x)

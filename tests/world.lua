@@ -103,7 +103,12 @@ function W.new(controllers, opts, gravity)
       local function jitter() return (math.random() * 2 - 1) * p.noise end
       return { x = w.vx + jitter(), y = w.vy + jitter(), z = w.vz + jitter() }
     end,
-    getQuaternion = function() return W.quat(w.psi, w.theta) end,
+    -- CC:VS's rom/apis/ship.lua wraps the native {x,y,z,w} as a quaternion
+    -- object: vector part in .v, scalar part in .a.
+    getQuaternion = function()
+      local q = W.quat(w.psi, w.theta)
+      return { v = { x = q.x, y = q.y, z = q.z }, a = q.w }
+    end,
     getAngularVelocity = function() return { x = 0, y = -w.r * RAD, z = 0 } end,
     getMass = function() return 50000 end,
   }
