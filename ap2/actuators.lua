@@ -2,34 +2,34 @@
 --
 -- How Create 6.0.8 destroys a rotation speed controller (RotationPropagator /
 -- KineticBlockEntity / KineticNetwork, read from the installed jar):
---   * every target change detaches the controller and re-attaches it: its
---     output props drop to 0 and come back, +5 flicker each way
---   * every block on the engine network gets +5 each time the network
---     switches between overstressed and not; during a write the network is
---     re-synced with the controller's props removed and again with them back,
---     so on a network near or over capacity ONE write costs EVERY controller
---     on it up to +10
---   * flicker decays 1 per tick; a block propagating with a score over 128 is
---     destroyed (speed over the server's maxRotationSpeed also destroys)
--- All six controllers hang off one engine network, so overstress switching
--- adds up across controllers. While overstressed nothing turns, the ship
--- sinks, the autopilot asks for more, and every write makes it worse.
+--   * a block propagating rotation with a flicker score over 128 is destroyed;
+--     the score decays 1 per tick
+--   * every target change detaches the controller and re-attaches it. Every
+--     block that gets its rotation THROUGH that controller drops to 0 (+5) and
+--     comes back (+5): its own props, and also anything further along its
+--     input shaft, including the next controllers in a row that share it. So
+--     a write to one controller can cost every controller after it +10, and
+--     the last one in the line pays for all of them
+--   * every switch of the engine network between overstressed and not costs
+--     every block on it +5 (a write near capacity can switch it twice)
+-- The ship's layout isn't known here, so every write is assumed to cost EVERY
+-- controller: one shared flicker budget for the whole ship.
 --
--- So the flight loop only records desired RPM; the writer coroutine calls
+-- The flight loop only records desired RPM; the writer coroutine calls
 -- service(), which writes at most one controller per call (setTargetSpeed
 -- runs on the server thread and stalls for a tick) under these rules:
 --   * RPM clamped to the controller cap and rounded to an integer
---   * one controller is written at most every min_interval seconds
---   * per-controller flicker is modelled at the worst case (flicker_cost per
---     write) and kept under flicker_limit
+--   * a shared flicker score (flicker_cost per write, flicker_cost_risky near
+--     the stress limit or without a stress reading) must stay under
+--     flicker_limit: about two writes a second for the whole ship
+--   * each controller is written at most every min_interval[group] seconds,
+--     and changes smaller than deadband[group] are skipped
+--   * when several controllers want a write, the largest weighted need wins
 --   * stress governor: from the stressometer (and each controller's learned
 --     stress per RPM) an increase may not take predicted stress past
---     stress_high of capacity; when the engine is overstressed, rear thrust
---     and RCS are shed to 0 and the elevation is brought back under the limit
---   * near the limit (or with no stress reading) every write also draws on a
---     shared network budget, because there it can flip overstress for all
---   * changes smaller than the deadband are skipped, larger ones are slewed
---   * a sign reversal always writes 0 first
+--     stress_high of capacity, the elevation first; when overstressed, rear
+--     thrust and RCS are shed to 0 and the elevation is brought back under
+--   * large changes are slewed; a sign reversal always writes 0 first
 --   * a controller changed by something else (another computer, a player) is
 --     left alone for foreign_hold seconds and reported
 --   * kill() bypasses pacing so zero goes out immediately
@@ -38,13 +38,26 @@ local util = require("ap2.util")
 local M = {}
 M.__index = M
 
--- Write order is also priority order.
 M.ORDER = { "lift", "thrust", "bow_port", "bow_stbd", "stern_port", "stern_stbd" }
 
 local GROUP = {
   lift = "lift", thrust = "thrust",
   bow_port = "rcs", bow_stbd = "rcs", stern_port = "rcs", stern_stbd = "rcs",
 }
+
+-- RCS controllers work in diagonal pairs; a pair is written back to back so
+-- the hull never pulls with half a pair.
+local PARTNER = {
+  bow_stbd = "stern_port", stern_port = "bow_stbd",
+  bow_port = "stern_stbd", stern_stbd = "bow_port",
+}
+
+-- Should RCS corner c be written right after its diagonal partner? Yes while
+-- the partner was written last (within a second) and the two still differ.
+local function follows(self, c, now)
+  local p = PARTNER[c.id] and self.ch[PARTNER[c.id]]
+  return p ~= nil and now - p.last_write < 1 and c.last_write < p.last_write and p.applied ~= c.applied
+end
 
 -- devices: map channel -> wrapped controller (nil when missing)
 function M.new(cfg, devices)
@@ -56,8 +69,9 @@ function M.new(cfg, devices)
     stress = nil,       -- last stressometer reading { su, cap, t }
     pred = nil,         -- stress predicted after writes since that reading
     since = {},         -- writes since that reading: { id, grow }
-    net_score = 0,
-    net_t = 0,
+    score = 0,          -- shared flicker score (every write charges every controller)
+    score_t = 0,
+    peak = 0,
   }, M)
   for _, id in ipairs(M.ORDER) do
     local c = cfg.controllers[id]
@@ -72,8 +86,6 @@ function M.new(cfg, devices)
       applied = nil,  -- last RPM known to be on the controller
       desired = nil,  -- nil = leave the controller alone
       last_write = -math.huge,
-      score = 0,
-      score_t = 0,
       writes = 0,
       fault = nil,
       impact = nil,   -- learned stress (SU) per RPM of this controller
@@ -169,84 +181,81 @@ function M:impact(c)
   return st.cap / caps
 end
 
-local function decayed(self, c, now)
-  local s = c.score - self.cfg.flicker_decay * (now - c.score_t)
+-- Shared flicker score now.
+function M:flicker(now)
+  local s = self.score - self.cfg.flicker_decay * (now - self.score_t)
   if s < 0 then s = 0 end
   return s
 end
 
-local function net_decayed(self, now)
-  local s = self.net_score - self.cfg.flicker_decay * (now - self.net_t)
-  if s < 0 then s = 0 end
-  return s
-end
-
--- Near the stress limit, or blind to it, a write can switch overstress for
--- the whole network.
+-- Near the stress limit, or blind to it, a write can also switch overstress
+-- for the whole network.
 function M:risky(now)
   if not fresh(self, now) then return true end
   return (self.pred or self.stress.su) >= self.cfg.stress_quiet * self.stress.cap
 end
 
--- Flicker charged to the written controller: its own +10, plus up to +10 when
--- the write may flip the network's overstress state.
 function M:write_cost(now)
   if self:risky(now) then return self.cfg.flicker_cost_risky end
   return self.cfg.flicker_cost
 end
 
--- Next value to write for channel c, or nil when nothing should be written now.
-function M:next_value(c, now)
+-- Target for channel c after the stress governor. The elevation comes first:
+-- rear thrust and RCS only get the room it does not need.
+function M:governed(c, now)
   local want = c.desired
-  if want == nil or c.dev == nil then return nil end
   local have = c.applied
-  if self.urgent and want == 0 and have ~= 0 then return 0 end
-  if self.locked then return nil end
-  if c.foreign_at and now - c.foreign_at < self.cfg.foreign_hold then return nil end
-
-  -- Stress governor. The elevation comes first: rear thrust and RCS only get
-  -- the room the elevation does not need, and give theirs back when it does.
   c.held = false
-  if fresh(self, now) then
-    local st = self.stress
-    local over = st.su >= st.cap
-    if over and c.group ~= "lift" then want = 0 end
-    local imp = self:impact(c)
-    if imp and imp > 0 and have ~= nil then
-      local room = self.cfg.stress_high * st.cap - (self.pred or st.su)
-      local squeeze = over
-      if c.group ~= "lift" then
-        local lift = self.ch.lift
-        local lift_imp = self:impact(lift)
-        if lift.desired and lift.applied and lift_imp then
-          local need = lift_imp * (math.abs(lift.desired) - math.abs(lift.applied))
-          if need > 0 then
-            room = room - need
-            squeeze = true
-          end
-        end
-      end
-      if room < 0 and not squeeze then room = 0 end
-      local limit = math.max(0, math.abs(have) + room / imp)
-      if math.abs(want) > limit then
-        want = util.sign(want) * math.floor(limit)
-        c.held = true
+  if not fresh(self, now) then return want end
+  local st = self.stress
+  local over = st.su >= st.cap
+  if over and c.group ~= "lift" then want = 0 end
+  local imp = self:impact(c)
+  if not (imp and imp > 0 and have ~= nil) then return want end
+  local room = self.cfg.stress_high * st.cap - (self.pred or st.su)
+  local squeeze = over
+  if c.group ~= "lift" then
+    local lift = self.ch.lift
+    local lift_imp = self:impact(lift)
+    if lift.desired and lift.applied and lift_imp then
+      local need = lift_imp * (math.abs(lift.desired) - math.abs(lift.applied))
+      if need > 0 then
+        room = room - need
+        squeeze = true
       end
     end
   end
-
-  if have == want then return nil end
-  if now - c.last_write < self.cfg.min_interval then return nil end
-  if decayed(self, c, now) + self:write_cost(now) > self.cfg.flicker_limit then return nil end
-  if self:risky(now) and net_decayed(self, now) + self.cfg.network_cost > self.cfg.network_limit then
-    return nil
+  if room < 0 and not squeeze then room = 0 end
+  local limit = math.max(0, math.abs(have) + room / imp)
+  if math.abs(want) > limit then
+    want = util.sign(want) * math.floor(limit)
+    c.held = true
   end
+  return want
+end
+
+-- Next value to write for channel c (ignoring the shared budget), or nil.
+function M:next_value(c, now)
+  if c.desired == nil or c.dev == nil then return nil end
+  local have = c.applied
+  if self.urgent and c.desired == 0 and have ~= 0 then return 0 end
+  if self.locked then return nil end
+  if c.foreign_at and now - c.foreign_at < self.cfg.foreign_hold then return nil end
+  local want = self:governed(c, now)
+  if have == want then return nil end
+  local follow = follows(self, c, now)
+  if not follow and now - c.last_write < self.cfg.min_interval[c.group] then return nil end
   if have == nil then
     -- Unknown controller state (getTargetSpeed failed): write the target as is.
     return want
   end
   local delta = want - have
-  if want ~= 0 and math.abs(delta) < self.cfg.deadband[c.group] then return nil end
+  -- Deadband only between two running speeds: starting or stopping is always
+  -- written. DEBUG (self.exact) writes exactly what it asks for.
+  if not follow and not self.exact and want ~= 0 and have ~= 0
+    and math.abs(delta) < self.cfg.deadband[c.group] then
+    return nil
+  end
   local slew = self.cfg.slew[c.group]
   local v = have + util.clamp(delta, -slew, slew)
   if have ~= 0 and v ~= 0 and util.sign(v) ~= util.sign(have) then v = 0 end
@@ -276,39 +285,68 @@ function M:service(now)
     local c = self.ch[M.ORDER[self.verify_i]]
     if c.dev then foreign(self, c, now) end
   end
+
+  -- Pick the controller that needs a write most: an emergency zero first,
+  -- then the second corner of an RCS pair whose first corner was just
+  -- written (one corner alone strafes the hull instead of turning it: the
+  -- helm's stabilisation resists the turn), then the elevation (it keeps the
+  -- ship up), then the largest weighted need. A pair is only started when
+  -- the budget covers both writes. Rear thrust and RCS may not dip into the
+  -- last lift_reserve points of the budget, except to finish a pair.
+  local best, best_v, best_need = nil, nil, -1
+  local cost = self:write_cost(now)
+  local after = self:flicker(now) + cost
   for _, id in ipairs(M.ORDER) do
     local c = self.ch[id]
     local v = self:next_value(c, now)
-    if v ~= nil and not (self.urgent and v == 0) and foreign(self, c, now) then
-      v = nil
-    end
     if v ~= nil then
-      local have = c.applied or 0
-      local grow = math.abs(v) - math.abs(have)
-      if self:risky(now) then
-        self.net_score = net_decayed(self, now) + self.cfg.network_cost
-        self.net_t = now
+      local urgent = self.urgent and v == 0
+      local partner = PARTNER[id] and self.ch[PARTNER[id]]
+      local follow = follows(self, c, now)
+      local starts_pair = partner ~= nil and not follow and partner.dev ~= nil
+        and partner.desired ~= nil and self:governed(partner, now) ~= partner.applied
+      -- Turning a controller down sheds stress and frees room: it may use the
+      -- elevation's reserve. Turning one up may not (finishing a pair may).
+      local sheds = math.abs(v) < math.abs(c.applied or 0)
+      local room = self.cfg.flicker_limit
+      if c.group ~= "lift" and not follow and not sheds then room = room - self.cfg.lift_reserve end
+      local needed = after + (starts_pair and cost or 0)
+      if urgent or needed <= room then
+        local need = math.abs((c.desired or 0) - (c.applied or 0)) / c.cap * self.cfg.weight[c.group]
+        if follow then need = need + 2000 elseif c.group == "lift" then need = need + 1000 end
+        if urgent then need = math.huge end
+        if need > best_need then best, best_v, best_need = c, v, need end
       end
-      c.score = decayed(self, c, now) + self:write_cost(now)
-      c.score_t = now
-      c.last_write = now
-      c.writes = c.writes + 1
-      local ok, err = pcall(c.dev.setTargetSpeed, v * c.sign)
-      if ok then
-        c.applied = v
-        c.fault = nil
-        if self.pred then
-          local imp = self:impact(c)
-          if imp then self.pred = self.pred + imp * grow end
-        end
-        self.since[#self.since + 1] = { id = id, grow = grow }
-      else
-        c.applied = nil
-        c.fault = tostring(err)
-      end
-      return id
     end
   end
+
+  if best and not (self.urgent and best_v == 0) and foreign(self, best, now) then
+    return nil
+  end
+  if best then
+    local c, v = best, best_v
+    local grow = math.abs(v) - math.abs(c.applied or 0)
+    self.score = self:flicker(now) + self:write_cost(now)
+    self.score_t = now
+    if self.score > self.peak then self.peak = self.score end
+    c.last_write = now
+    c.writes = c.writes + 1
+    local ok, err = pcall(c.dev.setTargetSpeed, v * c.sign)
+    if ok then
+      c.applied = v
+      c.fault = nil
+      if self.pred then
+        local imp = self:impact(c)
+        if imp then self.pred = self.pred + imp * grow end
+      end
+      self.since[#self.since + 1] = { id = c.id, grow = grow }
+    else
+      c.applied = nil
+      c.fault = tostring(err)
+    end
+    return c.id
+  end
+
   if self.urgent then
     local done = true
     for _, id in ipairs(M.ORDER) do
@@ -322,6 +360,7 @@ end
 
 function M:snapshot(now)
   local out = {}
+  local score = self:flicker(now)
   for _, id in ipairs(M.ORDER) do
     local c = self.ch[id]
     out[id] = {
@@ -329,7 +368,7 @@ function M:snapshot(now)
       cap = c.cap,
       des = c.desired,
       app = c.applied,
-      score = decayed(self, c, now),
+      score = score,
       writes = c.writes,
       fault = c.fault,
       present = c.dev ~= nil,

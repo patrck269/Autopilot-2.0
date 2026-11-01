@@ -244,7 +244,7 @@ local function both_script()
   check(shows("monitor_4", "TGT   090") and shows("monitor_4", "TGT    20"),
     "terminal commands set bearing 90 and speed 20")
   press("monitor_4", "T2") -- CRZ
-  sleep(25)
+  sleep(50) -- a 90 deg turn at the station-keeping turn rate, plus the speed ramp
   local hdg_err = math.abs(((w.psi - 90 + 180) % 360) - 180)
   local speed = math.sqrt(w.vx * w.vx + w.vz * w.vz)
   check(hdg_err < 2, "CRUISE turns to bearing 90", string.format("hdg %.2f", w.psi))
@@ -256,7 +256,7 @@ local function both_script()
   press("monitor_7", "T3") -- DEBUG (arm)
   check(shows("monitor_7", "CONF") and not shows("monitor_4", " DEBUG "), "first DEBUG press only arms")
   press("monitor_7", "T3") -- confirm
-  sleep(2)
+  sleep(6) -- the elevation steps down to 15 RPM through the write budget
   local all15 = true
   for _, v in pairs(w.cmd) do if v ~= 15 then all15 = false end end
   check(all15, "confirmed DEBUG puts every controller at +15 RPM")
@@ -271,8 +271,10 @@ local function both_script()
   check(shows("monitor_4", " KILL "), "mode shows KILL")
   local worst, worst_id = 0, nil
   for id, v in pairs(w.peak) do if v > worst then worst, worst_id = v, id end end
-  check(worst <= 60, "flicker score stayed <= 60", tostring(worst) .. " on " .. tostring(worst_id))
-  if worst > 60 then
+  -- The budget keeps every controller at or under 50; KILL bypasses it with up
+  -- to six zero writes (+60), so the worst case is 110, under Create's 128.
+  check(worst <= 110, "flicker score stayed under Create's 128", tostring(worst) .. " on " .. tostring(worst_id))
+  if worst > 110 then
     for _, e in ipairs(write_log) do
       if e[2] == worst_id then report[#report + 1] = string.format("  t=%.2f %s %d score %d", e[1], e[2], e[3], e[4]) end
     end

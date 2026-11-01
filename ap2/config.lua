@@ -45,23 +45,24 @@ return {
 
   -- Rotation speed controller protection (see ap2/actuators.lua for how Create
   -- destroys them). Create breaks a controller above 128 flicker points; the
-  -- score decays 1 per tick. A write costs the controller 10 and, near the
-  -- engine's stress limit, can cost every controller on the network up to 10
-  -- more. Writes are paced and the engine is kept out of overstress.
+  -- score decays 1 per tick (20 a second). A write can cost every controller
+  -- that shares its input shaft 10 points, so the whole ship shares one budget:
+  -- about two writes a second in total.
   actuator = {
-    min_interval = 0.5,   -- seconds between writes to one controller
-    flicker_cost = 10,    -- points charged per write with the engine clearly below its limit
-    flicker_cost_risky = 20, -- per write near the limit (overstress may flip) or with no stress reading
+    flicker_cost = 10,    -- shared points per write with the engine clearly below its limit
+    flicker_cost_risky = 20, -- per write near the stress limit (overstress may flip) or with no reading
     flicker_decay = 20,   -- points recovered per second
-    flicker_limit = 60,   -- writes wait while the score would pass this
-    network_cost = 10,    -- shared points per write while near the stress limit
-    network_limit = 60,   -- shared writes wait while this would be passed
+    flicker_limit = 50,   -- writes wait while the shared score would pass this. KILL bypasses
+                          -- the budget (up to 6 zero writes = +60), so the worst case stays at 110
+    lift_reserve = 20,    -- top of the budget kept for the elevation
+    min_interval = { lift = 1.0, thrust = 1.0, rcs = 1.0 }, -- seconds between writes to one controller
+    deadband = { lift = 5, thrust = 15, rcs = 100 },        -- smallest RPM change worth a write
+    weight = { lift = 3, thrust = 2, rcs = 1.5 },            -- who gets the next write
+    slew = { thrust = 400, lift = 300, rcs = 1000 },         -- largest RPM change per write
     stress_high = 0.85,   -- increases may not push engine stress past this share of capacity
-    stress_quiet = 0.75,  -- below this share a write cannot flip overstress: no shared cost
+    stress_quiet = 0.75,  -- below this share a write cannot flip overstress
     foreign_hold = 5,     -- seconds to leave alone a controller something else changed
-    deadband = { thrust = 4, lift = 2, rcs = 10 }, -- smallest RPM change worth a write
-    slew = { thrust = 400, lift = 300, rcs = 2500 }, -- largest RPM change per write
-    rcs_min_rpm = 60,     -- smaller RCS commands are sent as 0
+    rcs_min_rpm = 150,    -- smaller RCS commands are sent as 0
   },
 
   altitude = {
@@ -75,7 +76,8 @@ return {
     int_gain = 0.02,      -- altitude integral, (m/s^2) per block-second
     int_limit = 1.0,      -- integral limit, m/s^2
     int_zone = 6,         -- integral runs inside this many blocks
-    hold_band = 1.0,      -- "HOLD" once within this many blocks and |vy| < 0.4
+    hold_band = 1.0,      -- settled within this many blocks (and |vy| < 0.25): lift RPM is held
+    hold_release = 1.5,   -- held lift RPM is recomputed once the hull drifts this many blocks
     reverse_lift = true,  -- allow negative elevation RPM (pull down) when airborne
     -- Hover calibration. Lift = k * airDensity(y) * rpm^2, learned in flight.
     default_hover_rpm = 430, -- first guess at sea-level density, before any learning
@@ -88,12 +90,16 @@ return {
 
   speed = {
     max = 35,             -- hard speed cap, m/s
+    cap_margin = 0.5,     -- the speed reference stops this far under the cap
     ramp_time = 12,       -- reference reaches the new target in this many s (requirement: within 15 s)
     min_ramp = 0.3,       -- slowest reference ramp, m/s^2
     vel_gain = 0.8,       -- (m/s^2) per m/s of speed error
     int_gain = 0.15,      -- integral (m/s^2) per (m/s * s)
     int_limit = 2.0,      -- integral limit, m/s^2
-    stop_band = 0.3,      -- below this speed with target 0 the rear thrusters idle
+    stop_band = 0.2,      -- stopped: brake drift down to this (m/s), then the rear thrusters rest
+    hover_engage = 0.8,   -- stopped: drift (m/s) that wakes the rear thrusters again
+    hold_band = 0.3,      -- cruising within this of the target speed (m/s): thrust is held
+    hold_release = 1.0,   -- held thrust is recomputed once speed drifts this far (m/s)
     pitch_limit = 6,      -- degrees of acceleration-induced nose dip before thrust is held back
     -- Thrust model a = A*f - D*v|v| (f = normalised force, rpm^2/cap^2), learned in flight.
     accel_full = 1.5,     -- first guess: m/s^2 at full rear thrust
@@ -102,21 +108,26 @@ return {
 
   heading = {
     bearing_gain = 0.4,   -- (deg/s) of yaw rate per degree of bearing error
-    max_rate = 6,         -- max yaw rate, deg/s
-    yaw_accel = 1.5,      -- most yaw deceleration planned when arriving, deg/s^2
-    rate_gain = 0.8,      -- (deg/s^2) per deg/s of yaw-rate error
+    max_rate = 4,         -- max yaw rate, deg/s
+    yaw_accel = 0.5,      -- yaw deceleration planned when arriving, deg/s^2 (RCS updates lag ~1-2 s)
+    rate_gain = 0.4,      -- (deg/s^2) per deg/s of yaw-rate error
     int_gain = 0.3,       -- integral (deg/s^2) per (deg/s * s)
     int_limit = 3,        -- integral limit, deg/s^2
-    deadband = 0.25,      -- degrees; inside it (and nearly still) RCS rests
-    sway_gain = 0.3,      -- (m/s^2) per m/s of sideslip
+    -- Station keeping: a correction starts when the heading is off by more than
+    -- the deadzone (or the hull turns faster than engage_rate), and stops once
+    -- within settle_deg and turning slower than settle_rate. In between the RCS
+    -- holds a steady trim against any steady torque, or rests.
+    hover_deadzone = 2,   -- degrees, HOVER
+    cruise_deadzone = 1,  -- degrees, CRUISE
+    settle_deg = 0.5,
+    settle_rate = 0.2,    -- deg/s
+    engage_rate = 0.5,    -- deg/s
     high_speed = 20,      -- above this ground speed the heading integral works harder
     high_speed_gain = 2.0,
     -- RCS authority is learned in flight, direction included. These are the
     -- first guesses at full RCS; the direction is confirmed within a few seconds.
     yaw_authority = 1.0,  -- deg/s^2 of yaw at full RCS
-    sway_authority = 0.3, -- m/s^2 sideways at full RCS
     min_authority = 0.1,  -- smallest yaw authority believed (deg/s^2)
-    min_sway_authority = 0.03,
     probe_limit = 0.2,    -- RCS share allowed until the direction is confirmed
   },
 

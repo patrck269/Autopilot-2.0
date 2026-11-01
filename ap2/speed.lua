@@ -55,7 +55,9 @@ function M:reset(v_now)
 end
 
 function M:set_target(target, v_now)
-  self.target = util.clamp(target or 0, 0, self.c.max)
+  -- Thrust is only rewritten about once a second, so the reference stops
+  -- cap_margin short of the hard cap to keep the overshoot under it.
+  self.target = util.clamp(target or 0, 0, self.c.max - self.c.cap_margin)
   local gap = math.abs(self.target - self.v_ref)
   self.rate = math.max(gap / self.c.ramp_time, self.c.min_ramp)
 end
@@ -131,9 +133,34 @@ function M:command(s, dt, cap, applied_rpm)
     end
   end
 
-  if self.target == 0 and math.abs(v) < c.stop_band and math.abs(self.v_ref) < 0.01 then
+  -- Stopped (target 0): the rear thrusters rest until drift passes
+  -- hover_engage, then brake it back under stop_band and rest again.
+  if self.target == 0 and math.abs(self.v_ref) < 0.01 then
+    if self.resting then
+      if math.abs(v) > c.hover_engage then self.resting = false end
+    elseif math.abs(v) < c.stop_band then
+      self.resting = true
+    end
+  else
+    self.resting = false
+  end
+  if self.resting then
     f = 0
     self.integ = 0
+  end
+
+  -- Steady at cruise speed: hold the thrust that balances drag (plus the
+  -- learned trim) and stop rewriting it, until the speed drifts past
+  -- hold_release. Every write costs flicker on every controller.
+  if self.target > 0 and math.abs(self.v_ref - self.target) < 0.01 and not self.pitch_hold then
+    if self.held_f then
+      if math.abs(v - self.target) > c.hold_release then self.held_f = nil else f = self.held_f end
+    elseif math.abs(v - self.target) < c.hold_band then
+      self.held_f = util.clamp((self:drag(self.target) + self.integ) / self.A, -1, 1)
+      f = self.held_f
+    end
+  else
+    self.held_f = nil
   end
 
   if self.pitch_hold then

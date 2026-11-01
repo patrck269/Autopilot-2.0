@@ -112,10 +112,21 @@ function M:observe(s, applied_rpm, now, want_up)
 end
 
 -- Lift RPM to fly toward target world Y. Returns rpm.
+-- Settled inside hold_band, the RPM is held as it is (no new writes) until
+-- the hull drifts past hold_release or starts moving; calibration keeps
+-- learning from the held RPM, so each re-settle lands closer.
 function M:command(s, target, dt, cap)
   local a = self.a
   local err = target - s.y
   local dist = math.abs(err)
+  if self.held then
+    if self.grounded or dist > a.hold_release or math.abs(s.vy) > 0.4 or math.abs(self.held) > cap then
+      self.held = nil
+    else
+      self.phase = "HOLD"
+      return self.held, 0, 0
+    end
+  end
   local vmax = err > 0 and a.climb_rate or a.descent_rate
   local v_cmd = util.sign(err) * math.min(vmax, a.pos_gain * dist, math.sqrt(2 * a.brake_accel * dist))
 
@@ -146,6 +157,11 @@ function M:command(s, target, dt, cap)
     self.phase = "CLIMB"
   else
     self.phase = "DESCEND"
+  end
+  if not self.grounded and dist <= a.hold_band and math.abs(s.vy) < 0.25 then
+    -- Hold what keeps the hull level: the calibrated hover RPM here plus the
+    -- altitude trim, not this instant's correction.
+    self.held = util.clamp(self:rpm_for(self.integ, s.rho), -cap, cap)
   end
   return rpm, v_cmd, accel
 end

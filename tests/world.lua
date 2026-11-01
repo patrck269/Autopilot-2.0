@@ -30,7 +30,14 @@ W.DEFAULTS = {
   noise = 0,            -- +- m/s added to each velocity reading
   -- Engine network: capacity (SU) and stress per RPM of each controller's props.
   stress = { capacity = 1e7, lift = 120, thrust = 60, rcs = 30 },
+  -- Order of the controllers along their shared input shaft. A write resets
+  -- the controller and everything after it. Default: all six in one line,
+  -- the worst case for the last RCS.
+  chain = { "lift", "thrust", "bow_port", "bow_stbd", "stern_port", "stern_stbd" },
 }
+
+-- Diagonal RCS partners: one corner pulling alone strafes instead of turning.
+local PARTNER = { bow_stbd = "stern_port", bow_port = "stern_stbd" }
 
 local function ssq(x) return x * math.abs(x) end
 
@@ -74,6 +81,7 @@ function W.new(controllers, opts, gravity)
     rpm = {}, cmd = {}, flick = {}, peak = {}, writes = 0,
     devices = {},
     over = false, toggles = 0, destroyed = {},
+    ticks = 0, lonely = 0, lonely_run = 0, lonely_max = 0, -- RCS corner pulling without its diagonal partner
   }
   local k_lift = gravity / (sea * p.hover_rpm_sea ^ 2)
   local k_thrust = p.thrust_full / (sea * 1500 ^ 2)
@@ -98,11 +106,16 @@ function W.new(controllers, opts, gravity)
         assert(v == math.floor(v), "setTargetSpeed should get an integer, got " .. v)
         assert(math.abs(v) <= c.cap, id .. " over cap: " .. v)
         if v ~= w.cmd[id] then
-          -- Create detaches the controller (its props drop to 0, their load
-          -- leaves the network), then re-attaches at the new speed. The
-          -- network re-syncs overstress at each step; every switch costs
-          -- every block +5. The controller itself: +5 to zero, +5 back.
-          bump(id, 10)
+          -- Create detaches the controller and re-attaches it: every block
+          -- that gets rotation through it (its own props, and any controller
+          -- further along its input shaft) drops to 0 (+5) and comes back
+          -- (+5). The network re-syncs overstress at each step; every switch
+          -- costs every block +5.
+          local downstream = false
+          for _, other in ipairs(p.chain) do
+            if other == id then downstream = true end
+            if downstream then bump(other, 10) end
+          end
           w.cmd[id] = 0
           w.sync_overstress()
           w.cmd[id] = v
@@ -162,6 +175,18 @@ function W.new(controllers, opts, gravity)
     for id, v in pairs(w.cmd) do
       w.rpm[id] = w.rpm[id] + (v - w.rpm[id]) * math.min(1, dt / p.prop_lag)
       w.flick[id] = math.max(0, w.flick[id] - 1)
+    end
+    w.ticks = w.ticks + 1
+    local alone = false
+    for a, b in pairs(PARTNER) do
+      if (w.cmd[a] ~= 0) ~= (w.cmd[b] ~= 0) then alone = true end
+    end
+    if alone then
+      w.lonely = w.lonely + 1
+      w.lonely_run = w.lonely_run + 1
+      if w.lonely_run > w.lonely_max then w.lonely_max = w.lonely_run end
+    else
+      w.lonely_run = 0
     end
     -- Overstress stops the whole network.
     w.sync_overstress()

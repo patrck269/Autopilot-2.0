@@ -131,6 +131,7 @@ function M:step(s, now, dt, bank)
   local cfg = self.cfg
   local lift_applied = bank:applied("lift")
   self.lift_applied = lift_applied
+  bank.exact = self.mode == "DEBUG"
   local thr_applied = bank:applied("thrust")
   local thr_cap = self.caps.thrust
 
@@ -157,8 +158,7 @@ function M:step(s, now, dt, bank)
     self.spd:observe(s, util.ssq(thr_applied) / (thr_cap * thr_cap), now)
     local rcs_now = {}
     for _, id in ipairs(RCS) do rcs_now[id] = bank:applied(id) end
-    local u_now, sway_now = heading.applied(rcs_now, self.caps)
-    self.hdg:observe(s, u_now, sway_now, now)
+    self.hdg:observe(s, heading.applied(rcs_now, self.caps), now)
   end
 
   if not flying then
@@ -169,8 +169,16 @@ function M:step(s, now, dt, bank)
 
   out.lift = self.alt:command(s, self.tgt.alt, dt, self.caps.lift)
   out.thrust = self.spd:command(s, dt, thr_cap, thr_applied)
-  local u, sway = self.hdg:command(s, self.tgt.brg, dt, true)
-  local rcs = heading.mix(u, sway, self.caps, cfg.actuator.rcs_min_rpm)
+  local deadzone = self.mode == "HOVER" and cfg.heading.hover_deadzone or cfg.heading.cruise_deadzone
+  local u = self.hdg:command(s, self.tgt.brg, dt, deadzone)
+  -- Pulling at full and still off the bearing: the RCS can't hold this
+  -- (e.g. thrust line too far off centre for the RCS cap).
+  if math.abs(u) >= 0.99 and math.abs(self.hdg.err) > deadzone then
+    self.rcs_full_since = self.rcs_full_since or now
+  else
+    self.rcs_full_since = nil
+  end
+  local rcs = heading.mix(u, self.caps, cfg.actuator.rcs_min_rpm)
   for _, id in ipairs(RCS) do out[id] = rcs[id] end
 
   if self.spd.saturated ~= 0 and self.spd.phase ~= "HOLD" then
@@ -193,8 +201,8 @@ function M:alerts(s, now)
   if self.hdg.yaw.ok and self.hdg.yaw.est.t[1] < 0 then
     list[#list + 1] = "RCS TURNS BACKWARDS: COMPENSATED"
   end
-  if self.hdg.sway.ok and self.hdg.sway.est.t[1] < 0 then
-    list[#list + 1] = "RCS SWAYS BACKWARDS: COMPENSATED"
+  if self.rcs_full_since and now - self.rcs_full_since > 3 then
+    list[#list + 1] = "RCS AT FULL: HEADING NOT HELD"
   end
   if s and math.abs(s.yaw_rate) > 3 * self.cfg.heading.max_rate then
     list[#list + 1] = "SPINNING " .. util.fmt(s.yaw_rate, 0) .. " DEG/S"
@@ -212,7 +220,7 @@ end
 
 function M:saved()
   local h = self.hdg:saved()
-  return { k = self.alt.k, A = self.spd.A, Dn = self.spd.Dn, yaw_b = h.yaw_b, sway_b = h.sway_b }
+  return { k = self.alt.k, A = self.spd.A, Dn = self.spd.Dn, yaw_b = h.yaw_b }
 end
 
 return M
