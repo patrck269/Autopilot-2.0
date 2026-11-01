@@ -18,6 +18,7 @@ local FILES = {
   "ap2/link.lua",
   "ap2/mfd.lua",
   "ap2/pages.lua",
+  "ap2/rls.lua",
   "ap2/speed.lua",
   "ap2/store.lua",
   "ap2/telemetry.lua",

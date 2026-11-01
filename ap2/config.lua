@@ -17,10 +17,10 @@ return {
   controllers = {
     thrust     = { name = "Create_RotationSpeedController_17", cap = 1500, sign = 1, label = "RSC17 REAR THR" },
     lift       = { name = "Create_RotationSpeedController_16", cap = 2750, sign = 1, label = "RSC16 ELEV" },
-    bow_port   = { name = "Create_RotationSpeedController_13", cap = 2500, sign = 1, label = "RSC13 BOW PORT" },
-    bow_stbd   = { name = "Create_RotationSpeedController_14", cap = 2500, sign = 1, label = "RSC14 BOW STBD" },
-    stern_port = { name = "Create_RotationSpeedController_15", cap = 2500, sign = 1, label = "RSC15 STRN PORT" },
-    stern_stbd = { name = "Create_RotationSpeedController_12", cap = 2500, sign = 1, label = "RSC12 STRN STBD" },
+    bow_port   = { name = "Create_RotationSpeedController_13", cap = 1000, sign = 1, label = "RSC13 BOW PORT" },
+    bow_stbd   = { name = "Create_RotationSpeedController_14", cap = 1000, sign = 1, label = "RSC14 BOW STBD" },
+    stern_port = { name = "Create_RotationSpeedController_15", cap = 1000, sign = 1, label = "RSC15 STRN PORT" },
+    stern_stbd = { name = "Create_RotationSpeedController_12", cap = 1000, sign = 1, label = "RSC12 STRN STBD" },
   },
   speedometer = "Create_Speedometer_1",   -- main engine speed
   stressometer = "Create_Stressometer_2", -- main engine stress
@@ -96,15 +96,25 @@ return {
   heading = {
     bearing_gain = 0.4,   -- (deg/s) of yaw rate per degree of bearing error
     max_rate = 6,         -- max yaw rate, deg/s
-    yaw_accel = 1.5,      -- yaw deceleration planned when arriving, deg/s^2
-    rate_gain = 0.12,     -- normalised RCS force per deg/s of yaw-rate error
-    int_gain = 0.02,      -- integral force per (deg/s * s)
-    int_limit = 0.4,
+    yaw_accel = 1.5,      -- most yaw deceleration planned when arriving, deg/s^2
+    rate_gain = 0.8,      -- (deg/s^2) per deg/s of yaw-rate error
+    int_gain = 0.3,       -- integral (deg/s^2) per (deg/s * s)
+    int_limit = 3,        -- integral limit, deg/s^2
     deadband = 0.25,      -- degrees; inside it (and nearly still) RCS rests
-    sway_gain = 0.08,     -- normalised RCS force per m/s of sideslip
-    high_speed = 20,      -- above this ground speed the RCS gains are scaled up
+    sway_gain = 0.3,      -- (m/s^2) per m/s of sideslip
+    high_speed = 20,      -- above this ground speed the heading integral works harder
     high_speed_gain = 2.0,
+    -- RCS authority is learned in flight, direction included. These are the
+    -- first guesses at full RCS; the direction is confirmed within a few seconds.
+    yaw_authority = 1.0,  -- deg/s^2 of yaw at full RCS
+    sway_authority = 0.3, -- m/s^2 sideways at full RCS
+    min_authority = 0.1,  -- smallest yaw authority believed (deg/s^2)
+    min_sway_authority = 0.03,
+    probe_limit = 0.2,    -- RCS share allowed until the direction is confirmed
   },
+
+  -- DEBUG mode RPM for every controller (written to the block as is).
+  debug_rpm = 15,
 
   -- Files on the flight computer.
   cal_file = "/ap2_cal.dat",

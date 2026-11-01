@@ -17,9 +17,10 @@ W.DEFAULTS = {
   drag1 = 0.01,         -- linear drag, 1/s
   drag2 = 0.001,        -- quadratic drag, 1/m
   side_drag = 0.3,
-  rcs_accel = 0.6,      -- sway m/s^2 from one RCS at full RPM
-  yaw_accel = 2.0,      -- deg/s^2 from one RCS at full RPM
+  rcs_accel = 0.6,      -- sway m/s^2 from one RCS at 2500 RPM
+  yaw_accel = 2.0,      -- deg/s^2 from one RCS at 2500 RPM
   yaw_damp = 0.15,
+  rcs_reverse = false,  -- true: positive RPM pushes instead of pulls
   misalign = 0.0,       -- deg/s^2 of yaw per m/s^2 of rear thrust
   dip = 0.0,            -- deg/s^2 nose down per m/s^2 of rear thrust
   pitch_spring = 0.4,
@@ -124,7 +125,7 @@ function W.new(controllers, opts, gravity)
     local function f(id) return ssq(w.rpm[id]) end
     local a_lift = k_lift * rho * f("lift") - gravity
     local a_thr = k_thrust * rho * f("thrust")
-    local rc = 1 / (2500 * 2500)
+    local rc = (p.rcs_reverse and -1 or 1) / (2500 * 2500)
     local bs, bp = f("bow_stbd") * rc, f("bow_port") * rc
     local ss, sp = f("stern_stbd") * rc, f("stern_port") * rc
     local a_side = p.rcs_accel * (bs + ss - bp - sp) * rho / sea

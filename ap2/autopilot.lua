@@ -7,6 +7,9 @@
 --           reached through a ramp that arrives within 15 s), slow down with
 --           reverse thrust, RCS keeps heading and cancels sideslip
 --   KILL    every controller to 0 at once; stays until another mode is chosen
+--   DEBUG   every controller at +debug_rpm as written to the block (the
+--           config sign is not applied), to see which way each prop pushes.
+--           The elevation drops to that RPM too. Learning is paused.
 local util = require("ap2.util")
 local altitude = require("ap2.altitude")
 local speed = require("ap2.speed")
@@ -15,7 +18,7 @@ local heading = require("ap2.heading")
 local M = {}
 M.__index = M
 
-M.MODES = { STBY = true, HOVER = true, CRUISE = true, KILL = true }
+M.MODES = { STBY = true, HOVER = true, CRUISE = true, KILL = true, DEBUG = true }
 local RCS = { "bow_port", "bow_stbd", "stern_port", "stern_stbd" }
 
 -- saved: table from a previous flight ({ k =, A =, Dn = }) or nil.
@@ -27,7 +30,7 @@ function M.new(cfg, saved, sea_rho)
     tgt = { alt = nil, brg = nil, spd = 0 },
     alt = altitude.new(cfg, saved, sea_rho),
     spd = speed.new(cfg, saved),
-    hdg = heading.new(cfg),
+    hdg = heading.new(cfg, saved),
     sea_rho = sea_rho,
     caps = {},
     accel_limited_since = nil,
@@ -46,6 +49,8 @@ end
 function M:engage(mode, s)
   local prev = self.mode
   self.mode = mode
+  -- Learning pauses in KILL and DEBUG; start fresh windows either side.
+  self.alt.win, self.spd.win, self.hdg.win = nil, nil, nil
   if mode == "HOVER" or mode == "CRUISE" then
     if self.tgt.alt == nil then self.tgt.alt = util.round(s.y) end
     if self.tgt.brg == nil then self.tgt.brg = util.round(s.hdg) % 360 end
@@ -133,6 +138,11 @@ function M:step(s, now, dt, bank)
     for id in pairs(self.caps) do out[id] = 0 end
     return out
   end
+  if self.mode == "DEBUG" then
+    -- The bank multiplies by sign on write; pre-multiply so the block gets +rpm.
+    for id, c in pairs(cfg.controllers) do out[id] = cfg.debug_rpm * (c.sign or 1) end
+    return out
+  end
 
   local flying = self.mode == "HOVER" or self.mode == "CRUISE"
   local want_up = flying and self.tgt.alt ~= nil and self.tgt.alt > s.y + cfg.altitude.hold_band
@@ -140,6 +150,10 @@ function M:step(s, now, dt, bank)
     self.alt:observe(s, lift_applied, now, want_up)
   end
   self.spd:observe(s, util.ssq(thr_applied) / (thr_cap * thr_cap), now)
+  local rcs_now = {}
+  for _, id in ipairs(RCS) do rcs_now[id] = bank:applied(id) end
+  local u_now, sway_now = heading.applied(rcs_now, self.caps)
+  self.hdg:observe(s, u_now, sway_now, now)
 
   if not flying then
     out.thrust = 0
@@ -165,6 +179,20 @@ end
 function M:alerts(s, now)
   local list = {}
   if self.mode == "KILL" then list[#list + 1] = "KILL: ALL THRUST CUT" end
+  if self.mode == "DEBUG" then
+    list[#list + 1] = "DEBUG: ALL PROPS AT +" .. self.cfg.debug_rpm .. " RPM, ELEVATION TOO"
+  end
+  local flying = self.mode == "HOVER" or self.mode == "CRUISE"
+  if flying and not self.hdg.yaw.ok then list[#list + 1] = "RCS TURN DIRECTION: LEARNING" end
+  if self.hdg.yaw.ok and self.hdg.yaw.est.t[1] < 0 then
+    list[#list + 1] = "RCS TURNS BACKWARDS: COMPENSATED"
+  end
+  if self.hdg.sway.ok and self.hdg.sway.est.t[1] < 0 then
+    list[#list + 1] = "RCS SWAYS BACKWARDS: COMPENSATED"
+  end
+  if s and math.abs(s.yaw_rate) > 3 * self.cfg.heading.max_rate then
+    list[#list + 1] = "SPINNING " .. util.fmt(s.yaw_rate, 0) .. " DEG/S"
+  end
   if self.alt.saturated and (self.mode == "HOVER" or self.mode == "CRUISE") then
     list[#list + 1] = "ELEVATION AT RPM CAP"
   end
@@ -177,7 +205,8 @@ function M:alerts(s, now)
 end
 
 function M:saved()
-  return { k = self.alt.k, A = self.spd.A, Dn = self.spd.Dn }
+  local h = self.hdg:saved()
+  return { k = self.alt.k, A = self.spd.A, Dn = self.spd.Dn, yaw_b = h.yaw_b, sway_b = h.sway_b }
 end
 
 return M

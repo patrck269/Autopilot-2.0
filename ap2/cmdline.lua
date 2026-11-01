@@ -9,11 +9,12 @@ M.HELP = {
   "cruise      altitude + bearing + speed",
   "stby        autopilot off (lift left as is)",
   "kill        cut every controller to 0",
+  "debug       every prop at +15 RPM (drops!)",
   "sync        targets = current alt/heading",
   "recal       forget the hover calibration",
 }
 
-local MODES = { hover = "HOVER", h = "HOVER", cruise = "CRUISE", c = "CRUISE", stby = "STBY", standby = "STBY", off = "STBY", kill = "KILL" }
+local MODES = { hover = "HOVER", h = "HOVER", cruise = "CRUISE", c = "CRUISE", stby = "STBY", standby = "STBY", off = "STBY", kill = "KILL", debug = "DEBUG" }
 local VALUES = { alt = "alt", a = "alt", y = "alt", brg = "brg", b = "brg", hdg = "brg", spd = "spd", s = "spd", speed = "spd" }
 
 -- Returns a command { c =, v = }, or nil and an error, or "help".

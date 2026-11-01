@@ -10,10 +10,10 @@ Needs CC: Tweaked and CC:VS (`ship` and `aero` APIs) on the ship's computers.
 |---|---|---|
 | `Create_RotationSpeedController_17` | Rear thrusters. Positive RPM pushes forward; negative is reverse thrust | ±1500 |
 | `Create_RotationSpeedController_16` | Elevation | ±2750 |
-| `Create_RotationSpeedController_13` | Bow port puller | ±2500 |
-| `Create_RotationSpeedController_14` | Bow starboard puller | ±2500 |
-| `Create_RotationSpeedController_15` | Stern port puller | ±2500 |
-| `Create_RotationSpeedController_12` | Stern starboard puller | ±2500 |
+| `Create_RotationSpeedController_13` | Bow port puller | ±1000 |
+| `Create_RotationSpeedController_14` | Bow starboard puller | ±1000 |
+| `Create_RotationSpeedController_15` | Stern port puller | ±1000 |
+| `Create_RotationSpeedController_12` | Stern starboard puller | ±1000 |
 | `Create_Speedometer_1` | Main engine speed | |
 | `Create_Stressometer_2` | Main engine stress | |
 
@@ -52,6 +52,7 @@ Before the first flight, check two things. Bow direction: `frame.forward` must b
 | `cruise` | CRZ | Altitude, bearing, and speed together |
 | `stby` | STBY | Autopilot off: rear thrust and RCS to 0, elevation left as it is |
 | `kill` | SYS: KILL then CONF KILL | Every controller to 0 immediately |
+| `debug` | SYS: DEBUG then CONF DEBUG | Every controller at +15 RPM as written to the block (config `sign` not applied), to see which way each prop pushes. **The elevation drops to 15 RPM too, so an airborne ship falls.** Learning is paused. Leave with any other mode |
 | `sync` | PFD: SYNC | Targets become the current altitude and heading |
 | `recal` | CAL: RECAL then CONF | Forget the hover calibration. In a steady hover it restarts from the current RPM |
 
@@ -72,8 +73,8 @@ Each monitor is one MFD with option-select buttons around the edge. Top-row and 
 | AP | Mode, every target against its actual value, bearing error, speed reference, hover RPM here and at the target, alerts |
 | HSI | Heading-up compass rose with bearing bug and track, ground speed, drift, X/Z position |
 | ENG | Main engine RPM, stress against capacity, each controller's applied and desired RPM against its cap |
-| CAL | Ground or airborne, sample count, hover RPM here and at target, air density, lift constant, altitude trim, mass, learned thrust and drag |
-| SYS | Link health, start-up errors and warnings, live alerts, event log, KILL |
+| CAL | Ground or airborne, sample count, hover RPM here and at target, air density, lift constant, altitude trim, mass, learned thrust and drag, learned RCS yaw and sway strength |
+| SYS | Link health, start-up errors and warnings, live alerts, event log, DEBUG, KILL |
 | UFC | Keypad: type a number, then ALT, BRG, or SPD SET |
 
 ## How it flies
@@ -84,14 +85,14 @@ Each monitor is one MFD with option-select buttons around the edge. Top-row and 
 
 **Speed.** The speed reference ramps to the target in 12 s. Control uses normalised force (`RPM²`) with acceleration and drag learned in flight. Slowing down uses negative RPM on the rear thrusters. If acceleration pitches the nose past `pitch_limit` (6°), thrust is held back and the ramp pauses until the nose recovers.
 
-**Heading.** The bearing error sets a yaw-rate command, and a PI loop on yaw rate drives the four pullers: a right turn is bow starboard plus stern port. The integral holds off the steady torque of a thrust line that misses the estimated centre of mass. Above 20 m/s the gains double, and sideways drift is cancelled with the same pullers.
+**Heading.** The bearing error sets a yaw-rate command, and a PI loop on yaw rate gives a yaw acceleration. Yaw rate is taken from the change in heading between samples. The RCS strength is learned in flight, direction included: every 0.5 s the measured yaw and sideways acceleration are fitted against the force the pullers are applying, and commands are divided by that. Pullers that turn the hull the other way from the assumed mix (right turn = bow starboard plus stern port) are flipped automatically, and SYS shows "RCS TURNS BACKWARDS: COMPENSATED". Until the direction is confirmed, the RCS is held to 20% and half the turn rate. The learned values are saved with the calibration. The integral holds off the steady torque of a thrust line that misses the estimated centre of mass, and works twice as hard above 20 m/s. Sideways drift is cancelled with the same pullers.
 
 **Controller protection.** Every target change rebuilds Create's kinetic network and adds flicker points, and Create breaks the controller above 128. Each controller is written at most every 0.5 s and only while its modelled score stays under 60. Sign reversals pass through 0, and small changes are skipped. KILL bypasses the pacing.
 
 ## Limits
 
 - No controller can pitch the hull: the pullers are horizontal and the elevation is one shared controller. Nose dip is handled by limiting rear thrust, which can stretch an acceleration past 15 s on a hull that dips hard.
-- Gains are tuned against a simulated hull. In-flight learning covers lift, thrust, and drag; heading and speed gains are in `ap2/config.lua` if the real hull needs different ones.
+- Gains are tuned against a simulated hull. In-flight learning covers lift, thrust, drag, and RCS strength and direction; the remaining gains are in `ap2/config.lua` if the real hull needs different ones.
 
 ## Tests
 

@@ -20,7 +20,7 @@ function M.new(cfg, api)
   local up = unit(cfg.frame.up)
   local right = util.cross(fwd, up)
   local ship, aero, clock = api.ship, api.aero, api.clock
-  local last_t, last_pitch
+  local last_t, last_pitch, last_hdg, last_rate
 
   local self = {}
 
@@ -39,7 +39,6 @@ function M.new(cfg, api)
     local pos = ship.getWorldspacePosition()
     local vel = ship.getVelocity()
     local q = ship.getQuaternion()
-    local w = ship.getAngularVelocity()
     local mass = ship.getMass and ship.getMass() or nil
 
     local f = util.rotate(q, fwd)
@@ -50,11 +49,16 @@ function M.new(cfg, api)
     local heading = (atan2(f.x, -f.z) * DEG) % 360
     local pitch = math.asin(util.clamp(f.y, -1, 1)) * DEG
     local roll = math.asin(util.clamp(-r.y, -1, 1)) * DEG
-    local pitch_rate = 0
+    -- Rates come from the change in attitude between samples, so heading and
+    -- yaw rate always agree in sign (no reliance on the angular velocity frame).
+    local pitch_rate, yaw_rate = 0, 0
     if last_t and now > last_t then
-      pitch_rate = (pitch - last_pitch) / (now - last_t)
+      local dt = now - last_t
+      pitch_rate = (pitch - last_pitch) / dt
+      yaw_rate = util.wrap180(heading - last_hdg) / dt
+      if last_rate and dt < 0.5 then yaw_rate = 0.5 * last_rate + 0.5 * yaw_rate end
     end
-    last_t, last_pitch = now, pitch
+    last_t, last_pitch, last_hdg, last_rate = now, pitch, heading, yaw_rate
 
     local s = {
       t = now,
@@ -67,7 +71,7 @@ function M.new(cfg, api)
       pitch = pitch,
       roll = roll,
       pitch_rate = pitch_rate,
-      yaw_rate = -w.y * DEG, -- clockwise (compass increasing) positive
+      yaw_rate = yaw_rate, -- deg/s, clockwise (compass increasing) positive
       mass = mass,
       rho = self.rho_at(pos.y),
     }

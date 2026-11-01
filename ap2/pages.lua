@@ -12,7 +12,7 @@ local fmt = util.fmt
 local compass = util.compass
 local sin, cos, rad = math.sin, math.cos, math.rad
 
-local MODE_COLOR = { STBY = colors.lightGray, HOVER = colors.cyan, CRUISE = colors.lime, KILL = colors.red }
+local MODE_COLOR = { STBY = colors.lightGray, HOVER = colors.cyan, CRUISE = colors.lime, KILL = colors.red, DEBUG = colors.orange }
 
 local function stale(ctx)
   return ctx.st == nil or ctx.st.s == nil or ctx.age > 3
@@ -338,6 +338,8 @@ M.CAL = {
       { "Ship mass", fmt(s.mass, 0) .. " kg" },
       { "Thrust accel", fmt(sp.A, 2) .. " m/s2 at full" },
       { "Drag at 35", fmt(sp.drag35, 2) .. " m/s2" },
+      { "RCS yaw", fmt(st.hdg.yaw_b, 2) .. " deg/s2 at full" .. (st.hdg.yaw_ok and "" or " (learning)") },
+      { "RCS sway", fmt(st.hdg.sway_b, 2) .. " m/s2 at full" .. (st.hdg.sway_ok and "" or " (learning)") },
     }
     local y = a.y + 2
     for _, r in ipairs(rows) do
@@ -352,11 +354,23 @@ M.CAL = {
 
 ------------------------------------------------------------------ SYS
 M.SYS = {
-  id = "SYS", title = "Status, alerts and kill switch",
+  id = "SYS", title = "Status, alerts, kill and debug",
   osb = function(ctx)
     local armed = ctx.arm.kill and ctx.now - ctx.arm.kill < 3
+    local dbg_armed = ctx.arm.debug and ctx.now - ctx.arm.debug < 3
+    local mode = ctx.st and ctx.st.mode
     return {
-      T1 = { label = "STBY", lit = ctx.st and ctx.st.mode == "STBY", action = function(x) x.send("mode", "STBY") end },
+      T1 = { label = "STBY", lit = mode == "STBY", action = function(x) x.send("mode", "STBY") end },
+      -- DEBUG drops the elevation to debug RPM too, so it needs a second press.
+      T3 = { label = dbg_armed and "CONF\nDEBUG" or "DEBUG", lit = mode == "DEBUG", warn = dbg_armed,
+        action = function(x)
+          if dbg_armed then
+            x.arm.debug = nil
+            x.send("mode", "DEBUG")
+          else
+            x.arm.debug = x.now
+          end
+        end },
       T5 = { label = armed and "CONF\nKILL" or "KILL", warn = true, action = function(x)
         if armed then
           x.arm.kill = nil

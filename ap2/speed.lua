@@ -11,6 +11,7 @@
 -- PI term only cleans up the remainder. Acceleration that pitches the nose past
 -- pitch_limit holds the thrust back and pauses the ramp until it recovers.
 local util = require("ap2.util")
+local rls = require("ap2.rls")
 
 local M = {}
 M.__index = M
@@ -28,7 +29,7 @@ function M.new(cfg, saved)
     c = c,
     A = A,
     Dn = Dn,
-    P = { 4, 0, 0, 4 },
+    est = rls.new({ A, Dn }, { 4, 4 }, 0.98),
     target = 0,
     v_ref = 0,
     rate = c.min_ramp,
@@ -78,29 +79,11 @@ function M:observe(s, applied_f, now)
   if math.abs(f) < 0.02 and math.abs(x2) < 0.002 then return end -- nothing to learn from
   local y = (s.v_fwd - w.v0) / span
 
-  local P = self.P
-  local lambda = 0.98
-  local p1 = P[1] * f + P[2] * x2
-  local p2 = P[3] * f + P[4] * x2
-  local denom = lambda + f * p1 + x2 * p2
-  local k1, k2 = p1 / denom, p2 / denom
-  local err = y - (self.A * f + self.Dn * x2)
-  local A = self.A + k1 * err
-  local Dn = self.Dn + k2 * err
-  -- P = (P - k * phi' * P) / lambda
-  local r1 = f * P[1] + x2 * P[3]
-  local r2 = f * P[2] + x2 * P[4]
-  P[1] = (P[1] - k1 * r1) / lambda
-  P[2] = (P[2] - k1 * r2) / lambda
-  P[3] = (P[3] - k2 * r1) / lambda
-  P[4] = (P[4] - k2 * r2) / lambda
-  if P[1] + P[4] > 100 or not util.finite(P[1] + P[2] + P[3] + P[4]) then
-    self.P = { 4, 0, 0, 4 }
-  end
-  if util.finite(A) and util.finite(Dn) then
-    self.A = util.clamp(A, 0.05, 30)
-    self.Dn = util.clamp(Dn, 0, 60)
-  end
+  self.est:update(f, x2, y)
+  local t = self.est.t
+  t[1] = util.clamp(t[1], 0.05, 30)
+  t[2] = util.clamp(t[2], 0, 60)
+  self.A, self.Dn = t[1], t[2]
 end
 
 -- Rear thruster RPM for this step. applied_rpm is what the controller has now.

@@ -253,6 +253,14 @@ local function both_script()
   dump("cruise")
 
   press("monitor_7", "B2") -- SYS
+  press("monitor_7", "T3") -- DEBUG (arm)
+  check(shows("monitor_7", "CONF") and not shows("monitor_4", " DEBUG "), "first DEBUG press only arms")
+  press("monitor_7", "T3") -- confirm
+  sleep(2)
+  local all15 = true
+  for _, v in pairs(w.cmd) do if v ~= 15 then all15 = false end end
+  check(all15, "confirmed DEBUG puts every controller at +15 RPM")
+  check(shows("monitor_4", " DEBUG "), "mode shows DEBUG")
   press("monitor_7", "T5") -- KILL (arm)
   check(shows("monitor_7", "CONF"), "first KILL press arms the confirm")
   press("monitor_7", "T5") -- confirm

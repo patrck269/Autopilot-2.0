@@ -194,5 +194,85 @@ do
   check(sim.peak_flicker() <= 60, "flicker score stays <= 60", "peak " .. sim.peak_flicker())
 end
 
+-- Hover with the bearing 40 deg off. Returns max |yaw rate|, final heading
+-- error, and the largest heading error over the last 20 s.
+local function turn_in_hover(opts)
+  opts.y = 200
+  opts.rpm = { lift = 900 }
+  opts.psi = 0
+  opts.saved = { k = 10 / (plant.rho(62) * 900 * 900) }
+  local sim = plant.new(opts)
+  sim.cmd("alt", 200)
+  sim.cmd("brg", 40)
+  sim.cmd("mode", "HOVER")
+  local max_rate, late_err = 0, 0
+  sim.run(opts.seconds or 90, function(s2, s)
+    max_rate = math.max(max_rate, math.abs(s.yaw_rate))
+    if s2.w.t > (opts.seconds or 90) - 20 then
+      late_err = math.max(late_err, math.abs(util.wrap180(s.hdg - 40)))
+    end
+  end)
+  return sim, max_rate, math.abs(util.wrap180(sim.s.hdg - 40)), late_err
+end
+
+print("11. RCS pushes on positive RPM (turn direction backwards): no spin")
+do
+  local sim, max_rate, err, late = turn_in_hover({ rcs_reverse = true })
+  check(max_rate < 10, "yaw rate stays under 10 deg/s", string.format("max %.1f", max_rate))
+  check(late < 1.5, "settles on the bearing", string.format("err %.2f, late max %.2f", err, late))
+end
+
+print("12. Very strong RCS: no limit cycle")
+do
+  local sim, max_rate, err, late = turn_in_hover({ yaw_accel = 60 })
+  check(max_rate < 10, "yaw rate stays under 10 deg/s", string.format("max %.1f", max_rate))
+  check(late < 1.5, "settles on the bearing", string.format("err %.2f, late max %.2f", err, late))
+end
+
+print("13. Weak RCS: still turns")
+do
+  local sim, max_rate, err, late = turn_in_hover({ yaw_accel = 1.0, seconds = 150 })
+  check(late < 1.5, "settles on the bearing", string.format("err %.2f, late max %.2f", err, late))
+end
+
+print("14. RCS writes never exceed 1000 RPM, even saturated")
+do
+  local sim = plant.new({ y = 200, rpm = { lift = 900 }, psi = 0, yaw_accel = 0.3,
+    saved = { k = 10 / (plant.rho(62) * 900 * 900), yaw_b = 0.2 } })
+  sim.cmd("alt", 200)
+  sim.cmd("brg", 170)
+  sim.cmd("mode", "HOVER")
+  local top = 0
+  sim.run(20, function(s2)
+    for _, id in ipairs({ "bow_port", "bow_stbd", "stern_port", "stern_stbd" }) do
+      top = math.max(top, math.abs(s2.w.cmd[id]))
+    end
+  end)
+  check(top == 1000, "RCS reaches but does not pass 1000 RPM", "max " .. top)
+end
+
+print("15. DEBUG: every controller at +15 RPM on the block, calibration untouched")
+do
+  local sim = plant.new({ y = 200, rpm = { lift = 900 },
+    saved = { k = 10 / (plant.rho(62) * 900 * 900) },
+    cfg = function(cfg) cfg.controllers.bow_port.sign = -1 end })
+  sim.cmd("alt", 200)
+  sim.cmd("mode", "HOVER")
+  sim.run(5)
+  local k = sim.ap.alt.k
+  sim.cmd("mode", "DEBUG")
+  sim.run(3)
+  local all = true
+  for id, v in pairs(sim.w.cmd) do
+    if v ~= 15 then all = false; print("     " .. id .. " = " .. v) end
+  end
+  check(all, "all six blocks at +15 (bow_port has sign -1 in config)")
+  sim.run(5) -- the hull drops on 15 RPM elevation
+  check(sim.ap.alt.k == k, "hover calibration unchanged by the drop")
+  sim.cmd("mode", "HOVER")
+  sim.run(40)
+  check(math.abs(sim.w.y - 200) < 1.5, "HOVER afterwards climbs back to 200", string.format("y %.2f", sim.w.y))
+end
+
 print(failures == 0 and "ALL FLIGHT CHECKS PASSED" or (failures .. " FLIGHT CHECK(S) FAILED"))
 os.exit(failures == 0 and 0 or 1)
