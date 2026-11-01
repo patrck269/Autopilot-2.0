@@ -14,8 +14,8 @@ Needs CC: Tweaked and CC:VS (`ship` and `aero` APIs) on the ship's computers.
 | `Create_RotationSpeedController_14` | Bow starboard puller | ±2500 |
 | `Create_RotationSpeedController_15` | Stern port puller | ±2500 |
 | `Create_RotationSpeedController_12` | Stern starboard puller | ±2500 |
-| `Create_Speedometer_0` | Main engine speed | |
-| `Create_Stressometer_0` | Main engine stress | |
+| `Create_Speedometer_1` | Main engine speed | |
+| `Create_Stressometer_2` | Main engine stress | |
 
 Names, caps, and a per-controller `sign` flip are in `ap2/config.lua`. The MFD monitors default to `monitor_4` through `monitor_7`.
 

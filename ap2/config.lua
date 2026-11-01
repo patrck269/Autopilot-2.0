@@ -22,8 +22,8 @@ return {
     stern_port = { name = "Create_RotationSpeedController_15", cap = 2500, sign = 1, label = "RSC15 STRN PORT" },
     stern_stbd = { name = "Create_RotationSpeedController_12", cap = 2500, sign = 1, label = "RSC12 STRN STBD" },
   },
-  speedometer = "Create_Speedometer_0",   -- main engine speed
-  stressometer = "Create_Stressometer_0", -- main engine stress
+  speedometer = "Create_Speedometer_1",   -- main engine speed
+  stressometer = "Create_Stressometer_2", -- main engine stress
 
   -- Command center monitors used as MFDs, in display order. SWAP exchanges
   -- displays 1<->2 and 3<->4 (an odd last display swaps with display 1).
