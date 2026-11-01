@@ -28,6 +28,8 @@ W.DEFAULTS = {
   prop_lag = 0.15,
   ground_y = 64,
   noise = 0,            -- +- m/s added to each velocity reading
+  -- Engine network: capacity (SU) and stress per RPM of each controller's props.
+  stress = { capacity = 1e7, lift = 120, thrust = 60, rcs = 30 },
 }
 
 local function ssq(x) return x * math.abs(x) end
@@ -71,9 +73,18 @@ function W.new(controllers, opts, gravity)
     psi = opts.psi or 0, r = 0, theta = 0, q = 0,
     rpm = {}, cmd = {}, flick = {}, peak = {}, writes = 0,
     devices = {},
+    over = false, toggles = 0, destroyed = {},
   }
   local k_lift = gravity / (sea * p.hover_rpm_sea ^ 2)
   local k_thrust = p.thrust_full / (sea * 1500 ^ 2)
+  local group = { lift = "lift", thrust = "thrust" }
+
+  -- Create flicker: a block whose score passes 128 is destroyed.
+  local function bump(id, n)
+    w.flick[id] = w.flick[id] + n
+    if w.flick[id] > w.peak[id] then w.peak[id] = w.flick[id] end
+    if w.flick[id] > 128 then w.destroyed[id] = true end
+  end
 
   for id, c in pairs(controllers) do
     w.rpm[id] = opts.rpm and opts.rpm[id] or 0
@@ -82,18 +93,48 @@ function W.new(controllers, opts, gravity)
     w.peak[id] = 0
     w.devices[id] = {
       setTargetSpeed = function(v)
+        if w.destroyed[id] then error("No peripheral attached: " .. id) end
         assert(type(v) == "number", "setTargetSpeed expects a number")
         assert(v == math.floor(v), "setTargetSpeed should get an integer, got " .. v)
         assert(math.abs(v) <= c.cap, id .. " over cap: " .. v)
         if v ~= w.cmd[id] then
-          w.flick[id] = w.flick[id] + 10
-          if w.flick[id] > w.peak[id] then w.peak[id] = w.flick[id] end
+          -- Create detaches the controller (its props drop to 0, their load
+          -- leaves the network), then re-attaches at the new speed. The
+          -- network re-syncs overstress at each step; every switch costs
+          -- every block +5. The controller itself: +5 to zero, +5 back.
+          bump(id, 10)
+          w.cmd[id] = 0
+          w.sync_overstress()
+          w.cmd[id] = v
+          w.sync_overstress()
         end
         w.cmd[id] = v
         w.writes = w.writes + 1
       end,
       getTargetSpeed = function() return w.cmd[id] end,
     }
+  end
+
+  -- Stress on the one engine network: impact per RPM times |RPM| for each
+  -- controller's props (opts.stress = { capacity =, lift =, thrust =, rcs = }).
+  function w.stress()
+    local st = p.stress
+    if not st then return nil, nil end
+    local s = 0
+    for i, v in pairs(w.cmd) do
+      s = s + st[group[i] or "rcs"] * math.abs(v)
+    end
+    return s, st.capacity
+  end
+
+  function w.sync_overstress()
+    local s, capacity = w.stress()
+    local over = s ~= nil and s > capacity
+    if over ~= w.over then
+      w.over = over
+      w.toggles = w.toggles + 1
+      for i in pairs(w.cmd) do bump(i, 5) end
+    end
   end
 
   w.ship = {
@@ -122,7 +163,12 @@ function W.new(controllers, opts, gravity)
       w.rpm[id] = w.rpm[id] + (v - w.rpm[id]) * math.min(1, dt / p.prop_lag)
       w.flick[id] = math.max(0, w.flick[id] - 1)
     end
-    local function f(id) return ssq(w.rpm[id]) end
+    -- Overstress stops the whole network.
+    w.sync_overstress()
+    local function f(id)
+      if w.over or w.destroyed[id] then return 0 end
+      return ssq(w.rpm[id])
+    end
     local a_lift = k_lift * rho * f("lift") - gravity
     local a_thr = k_thrust * rho * f("thrust")
     local rc = (p.rcs_reverse and -1 or 1) / (2500 * 2500)

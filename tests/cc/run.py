@@ -16,7 +16,8 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 def run(exe: str, scenario: str) -> bool:
     data = pathlib.Path(tempfile.mkdtemp(prefix=f"ap2cc-{scenario}-"))
-    comp = data / "computer" / "0"
+    # Computer 5, so the harness can play a lower-ID flight computer.
+    comp = data / "computer" / "5"
     shutil.copytree(ROOT / "ap2", comp / "ap2")
     (comp / "tests").mkdir(parents=True)
     shutil.copy(ROOT / "tests" / "world.lua", comp / "tests" / "world.lua")
@@ -25,7 +26,7 @@ def run(exe: str, scenario: str) -> bool:
     (comp / "scenario.txt").write_text(scenario)
     try:
         proc = subprocess.run(
-            [exe, "--headless", "--directory", str(data)],
+            [exe, "--headless", "--directory", str(data), "--id", "5"],
             capture_output=True, text=True, timeout=240,
             cwd=str(pathlib.Path(exe).parent),
         )

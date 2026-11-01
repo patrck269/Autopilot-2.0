@@ -327,6 +327,23 @@ local function flight_script()
   os.queueEvent("rednet_message", 43, { ap2 = "cmd", c = "alt", v = 200, ship = 99, seq = 1 }, cfg.protocol)
   sleep(5)
   check(math.abs(w.y - 100) < 1.5, "a command for another ship is ignored", string.format("y %.2f", w.y))
+
+  -- A second flight computer (#3, lower ID) on the same ship: this one stops
+  -- writing; when #3 goes quiet, it takes over again.
+  check(os.getComputerID() == 5, "harness runs as computer 5", os.getComputerID())
+  for _ = 1, 3 do
+    os.queueEvent("rednet_message", 3, { ap2 = "status", ship = 7 }, cfg.protocol)
+    sleep(0.5)
+  end
+  local before = w.writes
+  type_line("alt 115")
+  for _ = 1, 6 do
+    os.queueEvent("rednet_message", 3, { ap2 = "status", ship = 7 }, cfg.protocol)
+    sleep(0.5)
+  end
+  check(w.writes == before, "locked while a lower-ID flight computer is active", (w.writes - before) .. " writes")
+  t = wait_y(115, 40)
+  check(t ~= nil, "takes over again once it goes quiet", string.format("y %.2f", w.y))
 end
 
 local role = scenario == "flight" and "flight" or "both"

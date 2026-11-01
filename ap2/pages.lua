@@ -291,7 +291,11 @@ M.ENG = {
     for _, id in ipairs(ORDER) do
       local r = st.rsc and st.rsc[id]
       if r and y < a.y + a.h then
-        local color = r.present and colors.white or colors.red
+        -- red: missing, magenta: changed by another computer, orange: held by the stress limit
+        local color = colors.white
+        if not r.present then color = colors.red
+        elseif r.foreign then color = colors.magenta
+        elseif r.held then color = colors.orange end
         local label = label_w >= 16 and (r.label or id) or SHORT[id]
         c:write(a.x, y, label:sub(1, label_w - 1), color)
         c:write(a.x + label_w, y, fmt(r.app, 0, 5) .. "/" .. fmt(r.des, 0, 5), colors.lightGray)

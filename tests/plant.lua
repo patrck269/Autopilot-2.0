@@ -40,6 +40,11 @@ function P.new(opts)
         for _, id in ipairs(actuators.ORDER) do bank:set(id, out[id]) end
         if hook then hook(sim, s) end
       end
+      -- The flight computer polls the stressometer every 0.5 s.
+      if w.tick % 10 == 0 and bank.set_stress then
+        local su, cap = w.stress()
+        if su then bank:set_stress(su, cap, w.t) end
+      end
       bank:service(w.t)
       w.step(0.05)
     end

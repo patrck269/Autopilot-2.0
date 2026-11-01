@@ -274,5 +274,76 @@ do
   check(math.abs(sim.w.y - 200) < 1.5, "HOVER afterwards climbs back to 200", string.format("y %.2f", sim.w.y))
 end
 
+-- Climb to 150, turn, cruise, turn and stop on an engine of the given
+-- capacity (SU). Hovering at 150 costs about 115000 SU. Returns the sim and
+-- the list of destroyed controllers.
+local function stressed_flight(capacity, opts)
+  opts = opts or {}
+  opts.stress = { capacity = capacity, lift = 120, thrust = 60, rcs = 30 }
+  local sim = plant.new(opts)
+  sim.cmd("alt", 150)
+  sim.cmd("brg", 60)
+  sim.cmd("mode", "HOVER")
+  sim.run(90)
+  sim.cmd("spd", 25)
+  sim.cmd("mode", "CRUISE")
+  sim.run(60)
+  sim.cmd("brg", 200)
+  sim.cmd("spd", 0)
+  sim.run(60)
+  local broken = {}
+  for id in pairs(sim.w.destroyed) do broken[#broken + 1] = id end
+  table.sort(broken)
+  return sim, broken
+end
+
+print("16. Engine with room for the hover (77%): flies, nothing destroyed")
+do
+  local sim, broken = stressed_flight(150000)
+  check(#broken == 0, "no rotation speed controller destroyed", table.concat(broken, ", "))
+  check(sim.w.peak_flicker() <= 70, "worst flicker score at or under 70 (Create breaks at 128)",
+    "peak " .. sim.w.peak_flicker())
+  check(sim.w.toggles == 0, "engine never overstressed", sim.w.toggles .. " switches")
+  check(math.abs(sim.w.y - 150) < 2, "holds altitude 150", string.format("y %.2f", sim.w.y))
+end
+
+print("17. Engine too small to hover at 150: held back, nothing destroyed")
+do
+  for _, start in ipairs({ "ground", "air" }) do
+    local opts = {}
+    if start == "air" then
+      opts = { y = 150, rpm = { lift = 900 }, saved = { k = 10 / (plant.rho(62) * 900 * 900) } }
+    end
+    local sim, broken = stressed_flight(118000, opts)
+    check(#broken == 0, start .. " start: no controller destroyed", table.concat(broken, ", "))
+    check(sim.w.peak_flicker() <= 70, start .. " start: worst flicker at or under 70", "peak " .. sim.w.peak_flicker())
+    local alerts = table.concat(sim.bank:alerts(sim.w.t), " | ")
+    check(alerts:find("STRESS LIMIT", 1, true) ~= nil or alerts:find("OVERSTRESSED", 1, true) ~= nil,
+      start .. " start: the stress limit is reported", alerts)
+  end
+end
+
+print("18. Another computer changes a controller: left alone, reported")
+do
+  local sim = plant.new({ y = 200, rpm = { lift = 900 }, saved = { k = 10 / (plant.rho(62) * 900 * 900) },
+    stress = { capacity = 300000, lift = 120, thrust = 60, rcs = 30 } })
+  sim.cmd("alt", 200)
+  sim.cmd("brg", 90)
+  sim.cmd("mode", "HOVER")
+  sim.run(5)
+  sim.w.devices.bow_port.setTargetSpeed(321) -- someone else
+  local writes_before = sim.w.writes
+  local fought = false
+  sim.run(3, function(s2)
+    if s2.w.cmd.bow_port ~= 321 then fought = true end
+  end)
+  check(not fought, "the foreign value is not overwritten for the hold time")
+  local alerts = table.concat(sim.bank:alerts(sim.w.t), " | ")
+  check(alerts:find("CHANGED BY ANOTHER COMPUTER", 1, true) ~= nil, "reported", alerts)
+  sim.run(10)
+  check(sim.w.cmd.bow_port ~= 321, "control resumes after the hold")
+  check(sim.w.writes > writes_before, "other controllers kept flying meanwhile")
+end
+
 print(failures == 0 and "ALL FLIGHT CHECKS PASSED" or (failures .. " FLIGHT CHECK(S) FAILED"))
 os.exit(failures == 0 and 0 or 1)

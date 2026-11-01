@@ -146,14 +146,20 @@ function M:step(s, now, dt, bank)
 
   local flying = self.mode == "HOVER" or self.mode == "CRUISE"
   local want_up = flying and self.tgt.alt ~= nil and self.tgt.alt > s.y + cfg.altitude.hold_band
-  if lift_applied ~= 0 or flying then
-    self.alt:observe(s, lift_applied, now, want_up)
+  -- While the engine is overstressed nothing turns: learning from it would
+  -- teach every model that the props do nothing. Restart the windows after.
+  if bank:overstressed(now) then
+    self.alt.win, self.spd.win, self.hdg.win = nil, nil, nil
+  else
+    if lift_applied ~= 0 or flying then
+      self.alt:observe(s, lift_applied, now, want_up)
+    end
+    self.spd:observe(s, util.ssq(thr_applied) / (thr_cap * thr_cap), now)
+    local rcs_now = {}
+    for _, id in ipairs(RCS) do rcs_now[id] = bank:applied(id) end
+    local u_now, sway_now = heading.applied(rcs_now, self.caps)
+    self.hdg:observe(s, u_now, sway_now, now)
   end
-  self.spd:observe(s, util.ssq(thr_applied) / (thr_cap * thr_cap), now)
-  local rcs_now = {}
-  for _, id in ipairs(RCS) do rcs_now[id] = bank:applied(id) end
-  local u_now, sway_now = heading.applied(rcs_now, self.caps)
-  self.hdg:observe(s, u_now, sway_now, now)
 
   if not flying then
     out.thrust = 0

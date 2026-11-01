@@ -43,15 +43,22 @@ return {
   status_period = 0.25, -- telemetry broadcast period, seconds
   gravity = 10,         -- VS gravity, m/s^2
 
-  -- Rotation speed controller protection. Every target change rebuilds the
-  -- Create kinetic network and adds flicker points (Create breaks the block
-  -- above 128; the score decays 1 per tick). Writes are paced to stay far
-  -- below that, and a sign reversal always passes through 0 first.
+  -- Rotation speed controller protection (see ap2/actuators.lua for how Create
+  -- destroys them). Create breaks a controller above 128 flicker points; the
+  -- score decays 1 per tick. A write costs the controller 10 and, near the
+  -- engine's stress limit, can cost every controller on the network up to 10
+  -- more. Writes are paced and the engine is kept out of overstress.
   actuator = {
     min_interval = 0.5,   -- seconds between writes to one controller
-    flicker_cost = 10,    -- points charged per write
+    flicker_cost = 10,    -- points charged per write with the engine clearly below its limit
+    flicker_cost_risky = 20, -- per write near the limit (overstress may flip) or with no stress reading
     flicker_decay = 20,   -- points recovered per second
     flicker_limit = 60,   -- writes wait while the score would pass this
+    network_cost = 10,    -- shared points per write while near the stress limit
+    network_limit = 60,   -- shared writes wait while this would be passed
+    stress_high = 0.85,   -- increases may not push engine stress past this share of capacity
+    stress_quiet = 0.75,  -- below this share a write cannot flip overstress: no shared cost
+    foreign_hold = 5,     -- seconds to leave alone a controller something else changed
     deadband = { thrust = 4, lift = 2, rcs = 10 }, -- smallest RPM change worth a write
     slew = { thrust = 400, lift = 300, rcs = 2500 }, -- largest RPM change per write
     rcs_min_rpm = 60,     -- smaller RCS commands are sent as 0

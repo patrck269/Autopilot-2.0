@@ -72,7 +72,7 @@ Each monitor is one MFD with option-select buttons around the edge. Top-row and 
 | PFD | Attitude (pitch ladder, roll), heading and bearing, ground and forward speed, altitude, target, vertical speed, altitude and speed phases |
 | AP | Mode, every target against its actual value, bearing error, speed reference, hover RPM here and at the target, alerts |
 | HSI | Heading-up compass rose with bearing bug and track, ground speed, drift, X/Z position |
-| ENG | Main engine RPM, stress against capacity, each controller's applied and desired RPM against its cap |
+| ENG | Main engine RPM, stress against capacity, each controller's applied and desired RPM against its cap. Orange: held by the stress limit. Magenta: changed by another computer. Red: missing |
 | CAL | Ground or airborne, sample count, hover RPM here and at target, air density, lift constant, altitude trim, mass, learned thrust and drag, learned RCS yaw and sway strength |
 | SYS | Link health, start-up errors and warnings, live alerts, event log, DEBUG, KILL |
 | UFC | Keypad: type a number, then ALT, BRG, or SPD SET |
@@ -87,7 +87,17 @@ Each monitor is one MFD with option-select buttons around the edge. Top-row and 
 
 **Heading.** The bearing error sets a yaw-rate command, and a PI loop on yaw rate gives a yaw acceleration. Yaw rate is taken from the change in heading between samples. The RCS strength is learned in flight, direction included: every 0.5 s the measured yaw and sideways acceleration are fitted against the force the pullers are applying, and commands are divided by that. Pullers that turn the hull the other way from the assumed mix (right turn = bow starboard plus stern port) are flipped automatically, and SYS shows "RCS TURNS BACKWARDS: COMPENSATED". Until the direction is confirmed, the RCS is held to 20% and half the turn rate. The learned values are saved with the calibration. The integral holds off the steady torque of a thrust line that misses the estimated centre of mass, and works twice as hard above 20 m/s. Sideways drift is cancelled with the same pullers.
 
-**Controller protection.** Every target change rebuilds Create's kinetic network and adds flicker points, and Create breaks the controller above 128. Each controller is written at most every 0.5 s and only while its modelled score stays under 60. Sign reversals pass through 0, and small changes are skipped. KILL bypasses the pacing.
+**Controller protection.** In Create 6.0.8 a rotation speed controller is destroyed when its flicker score passes 128 (it decays 1 per tick). Every target change detaches the controller and re-attaches it, which costs it 10. All six controllers hang off the one engine network, and every time that network switches between overstressed and not, every block on it gets +5. A write on a network near or over capacity drops the controller's props out and back in, so it can cost **every** controller up to +10. Overstressed, nothing turns, the ship sinks, and asking for more makes it worse. That's what was breaking them. The flight computer now:
+
+- reads the stressometer and learns each controller's stress per RPM. It never lets an increase push the engine past 85% of capacity, and the elevation gets first call on that room (rear thrust and RCS give theirs back when it needs it). If the engine is overstressed anyway, rear thrust and RCS are cut to 0 and the elevation is brought back under the limit
+- charges each write at its real cost (10, or 20 near the limit or without a stress reading) and keeps every controller under 60. Near the limit it also limits writes across the whole ship
+- writes one controller per tick, each at most every 0.5 s. Sign reversals pass through 0 and small changes are skipped. KILL bypasses the pacing
+- re-reads every controller's target. If something else changed one (a player, another computer, the old autopilot), it leaves that controller alone for 5 s and shows it on SYS and ENG
+- stops writing if another Autopilot 2.0 flight computer on the same ship is heard. The lower computer ID keeps control
+
+If the engine can't hold a hover inside 85% at the target height, the ship stays lower (where the air is denser) and SYS shows "STRESS LIMIT: … HELD". Learning pauses while the engine is overstressed.
+
+Before flying with Autopilot 2.0, make sure no other program writes to these controllers: shut down or clear the old autopilot computers, including its watchdog.
 
 ## Limits
 

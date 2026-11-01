@@ -56,6 +56,7 @@ function M.run(cfg, opts)
   local saved = store.load(cfg.cal_file)
   local ap = autopilot.new(cfg, saved, tel.rho_at(62))
   local ship_id = ship.getId and ship.getId() or nil
+  local others = {} -- other flight computers heard on this ship: id -> time
   local slug = ship.getSlug and ship.getSlug() or "ship"
 
   local last_s = tel.read()
@@ -79,11 +80,7 @@ function M.run(cfg, opts)
     local a = ap.alt
     local alerts = ap:alerts(s, now)
     for _, f in pairs(faults) do alerts[#alerts + 1] = f end
-    for _, id in ipairs(actuators.ORDER) do
-      local c = bank.ch[id]
-      if c.dev == nil then alerts[#alerts + 1] = "MISSING " .. c.label end
-      if c.fault then alerts[#alerts + 1] = c.label .. " WRITE FAILED" end
-    end
+    for _, a in ipairs(bank:alerts(now)) do alerts[#alerts + 1] = a end
     local tgt_alt = ap.tgt.alt or s.y
     local rho_t = tel.rho_at(tgt_alt)
     return {
@@ -142,6 +139,11 @@ function M.run(cfg, opts)
         local now = os.clock()
         local dt = util.clamp(now - last, 0.05, 0.5)
         last = now
+        local me, locked = os.getComputerID(), false
+        for id, t in pairs(others) do
+          if now - t > 5 then others[id] = nil elseif id < me then locked = true end
+        end
+        bank.locked = locked
         local ok, s = pcall(tel.read)
         if ok then
           faults.telemetry = nil
@@ -193,6 +195,7 @@ function M.run(cfg, opts)
         if ok2 then cap = c end
       end
       gauges.rpm, gauges.su, gauges.cap = rpm, su, cap
+      bank:set_stress(su, cap, os.clock())
       faults.gauges = (rpm == nil or su == nil) and "ENGINE GAUGE READ FAILED" or nil
       sleep(0.5)
     end
@@ -204,6 +207,11 @@ function M.run(cfg, opts)
       local kind, msg, from = link:parse(ev)
       if kind == "cmd" then
         handle(msg, from)
+      elseif kind == "status" and from ~= "local" and type(from) == "number"
+        and msg.ship ~= nil and msg.ship == ship_id then
+        -- Another flight computer on this ship. Two writers would fight over
+        -- every controller; the lower computer ID keeps control.
+        others[from] = os.clock()
       elseif ev[1] == "peripheral" or ev[1] == "peripheral_detach" then
         for id, c in pairs(cfg.controllers) do
           local present = P.isPresent(c.name)
