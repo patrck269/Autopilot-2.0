@@ -6,25 +6,32 @@
 --     the score decays 1 per tick
 --   * every target change detaches the controller and re-attaches it. Every
 --     block that gets its rotation THROUGH that controller drops to 0 (+5) and
---     comes back (+5): its own props, and also anything further along its
---     input shaft, including the next controllers in a row that share it. So
---     a write to one controller can cost every controller after it +10, and
---     the last one in the line pays for all of them
+--     comes back (+5): its own props and every controller downstream of it.
+--     On this ship the four RCS controllers are downstream of the elevation
+--     controller (but not of each other), so an elevation write costs the
+--     elevation and all four RCS +10 each; an RCS write costs only itself
 --   * every switch of the engine network between overstressed and not costs
 --     every block on it +5 (a write near capacity can switch it twice)
--- The ship's layout isn't known here, so every write is assumed to cost EVERY
--- controller: one shared flicker budget for the whole ship.
+-- The layout is in config (actuator.downstream).
 --
 -- The flight loop only records desired RPM; the writer coroutine calls
 -- service(), which writes at most one controller per call (setTargetSpeed
 -- runs on the server thread and stalls for a tick) under these rules:
 --   * RPM clamped to the controller cap and rounded to an integer
---   * a shared flicker score (flicker_cost per write, flicker_cost_risky near
---     the stress limit or without a stress reading) must stay under
---     flicker_limit: about two writes a second for the whole ship
+--   * every controller's flicker score is modelled: a write charges
+--     flicker_cost to the written controller and everything downstream of it,
+--     plus flicker_risk to every controller when the engine is near its stress
+--     limit (or there is no stress reading). No write may take any score past
+--     flicker_limit. RCS and rear-thrust increases leave lift_reserve of each
+--     RCS score free, so the elevation can always be written
 --   * each controller is written at most every min_interval[group] seconds,
 --     and changes smaller than deadband[group] are skipped
---   * when several controllers want a write, the largest weighted need wins
+--   * the RCS is written as one batch: when its corners change, the ones
+--     turning down go first, then the ones turning up, each group on
+--     consecutive ticks and only started when the whole group fits the
+--     budget, so the hull never runs on a stray corner (with the Eureka helm
+--     resisting turns, one corner alone strafes instead of turning)
+--   * the elevation goes first, then the largest weighted need
 --   * stress governor: from the stressometer (and each controller's learned
 --     stress per RPM) an increase may not take predicted stress past
 --     stress_high of capacity, the elevation first; when overstressed, rear
@@ -39,25 +46,12 @@ local M = {}
 M.__index = M
 
 M.ORDER = { "lift", "thrust", "bow_port", "bow_stbd", "stern_port", "stern_stbd" }
+local RCS = { "bow_port", "bow_stbd", "stern_port", "stern_stbd" }
 
 local GROUP = {
   lift = "lift", thrust = "thrust",
   bow_port = "rcs", bow_stbd = "rcs", stern_port = "rcs", stern_stbd = "rcs",
 }
-
--- RCS controllers work in diagonal pairs; a pair is written back to back so
--- the hull never pulls with half a pair.
-local PARTNER = {
-  bow_stbd = "stern_port", stern_port = "bow_stbd",
-  bow_port = "stern_stbd", stern_stbd = "bow_port",
-}
-
--- Should RCS corner c be written right after its diagonal partner? Yes while
--- the partner was written last (within a second) and the two still differ.
-local function follows(self, c, now)
-  local p = PARTNER[c.id] and self.ch[PARTNER[c.id]]
-  return p ~= nil and now - p.last_write < 1 and c.last_write < p.last_write and p.applied ~= c.applied
-end
 
 -- devices: map channel -> wrapped controller (nil when missing)
 function M.new(cfg, devices)
@@ -69,9 +63,8 @@ function M.new(cfg, devices)
     stress = nil,       -- last stressometer reading { su, cap, t }
     pred = nil,         -- stress predicted after writes since that reading
     since = {},         -- writes since that reading: { id, grow }
-    score = 0,          -- shared flicker score (every write charges every controller)
-    score_t = 0,
-    peak = 0,
+    batch = {},         -- RCS corners still to write in the running batch
+    hit = {},           -- id -> list of controllers a write to id charges
   }, M)
   for _, id in ipairs(M.ORDER) do
     local c = cfg.controllers[id]
@@ -87,11 +80,18 @@ function M.new(cfg, devices)
       desired = nil,  -- nil = leave the controller alone
       last_write = -math.huge,
       writes = 0,
+      score = 0,      -- modelled flicker score
+      score_t = 0,
+      peak = 0,
       fault = nil,
       impact = nil,   -- learned stress (SU) per RPM of this controller
       held = false,   -- an increase is being held back by the stress governor
       foreign_at = nil,
     }
+    self.hit[id] = { id }
+    for _, d in ipairs(self.cfg.downstream[id] or {}) do
+      self.hit[id][#self.hit[id] + 1] = d
+    end
   end
   return self
 end
@@ -127,6 +127,7 @@ end
 function M:kill()
   for _, id in ipairs(M.ORDER) do self.ch[id].desired = 0 end
   self.urgent = true
+  self.batch = {}
 end
 
 function M:applied(id)
@@ -181,11 +182,18 @@ function M:impact(c)
   return st.cap / caps
 end
 
--- Shared flicker score now.
-function M:flicker(now)
-  local s = self.score - self.cfg.flicker_decay * (now - self.score_t)
+-- Modelled flicker score of channel c now.
+function M:score(c, now)
+  local s = c.score - self.cfg.flicker_decay * (now - c.score_t)
   if s < 0 then s = 0 end
   return s
+end
+
+-- Highest modelled score on any controller.
+function M:flicker(now)
+  local m = 0
+  for _, id in ipairs(M.ORDER) do m = math.max(m, self:score(self.ch[id], now)) end
+  return m
 end
 
 -- Near the stress limit, or blind to it, a write can also switch overstress
@@ -195,9 +203,37 @@ function M:risky(now)
   return (self.pred or self.stress.su) >= self.cfg.stress_quiet * self.stress.cap
 end
 
-function M:write_cost(now)
-  if self:risky(now) then return self.cfg.flicker_cost_risky end
-  return self.cfg.flicker_cost
+-- Would writing ids (in order) keep every score within the limit? reserve:
+-- keep lift_reserve of each RCS score free for the elevation.
+function M:fits(ids, now, reserve)
+  local sc = {}
+  for _, id in ipairs(M.ORDER) do sc[id] = self:score(self.ch[id], now) end
+  local risk = self:risky(now) and self.cfg.flicker_risk or 0
+  for _, id in ipairs(ids) do
+    for _, d in ipairs(self.hit[id]) do sc[d] = sc[d] + self.cfg.flicker_cost end
+    if risk > 0 then
+      for d in pairs(sc) do sc[d] = sc[d] + risk end
+    end
+  end
+  for d, v in pairs(sc) do
+    local limit = self.cfg.flicker_limit
+    if reserve and GROUP[d] == "rcs" then limit = limit - self.cfg.lift_reserve end
+    if v > limit then return false end
+  end
+  return true
+end
+
+local function charge(self, id, now)
+  local risk = self:risky(now) and self.cfg.flicker_risk or 0
+  local function add(c, n)
+    c.score = self:score(c, now) + n
+    c.score_t = now
+    if c.score > c.peak then c.peak = c.score end
+  end
+  for _, d in ipairs(self.hit[id]) do add(self.ch[d], self.cfg.flicker_cost) end
+  if risk > 0 then
+    for _, d in ipairs(M.ORDER) do add(self.ch[d], risk) end
+  end
 end
 
 -- Target for channel c after the stress governor. The elevation comes first:
@@ -234,8 +270,9 @@ function M:governed(c, now)
   return want
 end
 
--- Next value to write for channel c (ignoring the shared budget), or nil.
-function M:next_value(c, now)
+-- Next value to write for channel c (ignoring the budget), or nil.
+-- in_batch: part of a running RCS batch, so no interval or deadband.
+function M:next_value(c, now, in_batch)
   if c.desired == nil or c.dev == nil then return nil end
   local have = c.applied
   if self.urgent and c.desired == 0 and have ~= 0 then return 0 end
@@ -243,8 +280,7 @@ function M:next_value(c, now)
   if c.foreign_at and now - c.foreign_at < self.cfg.foreign_hold then return nil end
   local want = self:governed(c, now)
   if have == want then return nil end
-  local follow = follows(self, c, now)
-  if not follow and now - c.last_write < self.cfg.min_interval[c.group] then return nil end
+  if not in_batch and now - c.last_write < self.cfg.min_interval[c.group] then return nil end
   if have == nil then
     -- Unknown controller state (getTargetSpeed failed): write the target as is.
     return want
@@ -252,7 +288,7 @@ function M:next_value(c, now)
   local delta = want - have
   -- Deadband only between two running speeds: starting or stopping is always
   -- written. DEBUG (self.exact) writes exactly what it asks for.
-  if not follow and not self.exact and want ~= 0 and have ~= 0
+  if not in_batch and not self.exact and want ~= 0 and have ~= 0
     and math.abs(delta) < self.cfg.deadband[c.group] then
     return nil
   end
@@ -275,92 +311,114 @@ local function foreign(self, c, now)
   return true
 end
 
+local function write(self, c, v, now)
+  if not (self.urgent and v == 0) and foreign(self, c, now) then return nil end
+  local grow = math.abs(v) - math.abs(c.applied or 0)
+  charge(self, c.id, now)
+  c.last_write = now
+  c.writes = c.writes + 1
+  local ok, err = pcall(c.dev.setTargetSpeed, v * c.sign)
+  if ok then
+    c.applied = v
+    c.fault = nil
+    if self.pred then
+      local imp = self:impact(c)
+      if imp then self.pred = self.pred + imp * grow end
+    end
+    self.since[#self.since + 1] = { id = c.id, grow = grow }
+  else
+    c.applied = nil
+    c.fault = tostring(err)
+  end
+  return c.id
+end
+
+-- The RCS group to write now, or nil: the corners turning down (or, if none,
+-- the corners turning up), started only when at least one corner is due
+-- (interval and deadband) and the whole group fits the budget.
+function M:rcs_group(now)
+  local due = false
+  local down, up = {}, {}
+  for _, id in ipairs(RCS) do
+    local c = self.ch[id]
+    if self:next_value(c, now) ~= nil then due = true end
+    local v = self:next_value(c, now, true)
+    if v ~= nil then
+      local list = math.abs(v) < math.abs(c.applied or 0) and down or up
+      list[#list + 1] = id
+    end
+  end
+  if not due then return nil end
+  local group = #down > 0 and down or up
+  if #group == 0 then return nil end
+  if not self:fits(group, now, group == up) then return nil end
+  return group
+end
+
 -- Write at most one controller. Returns the channel id written, or nil.
 -- setTargetSpeed runs on the server thread, so in game this call yields.
 function M:service(now)
-  -- Check one controller per pass against what is on the block, so a change
-  -- made by something else is seen even when we have nothing to write.
-  if not self.urgent then
-    self.verify_i = (self.verify_i or 0) % #M.ORDER + 1
-    local c = self.ch[M.ORDER[self.verify_i]]
-    if c.dev then foreign(self, c, now) end
+  -- Emergency zeros first.
+  if self.urgent then
+    for _, id in ipairs(M.ORDER) do
+      local c = self.ch[id]
+      if c.dev and c.applied ~= 0 and c.desired == 0 then return write(self, c, 0, now) end
+    end
+    self.urgent = false
   end
 
-  -- Pick the controller that needs a write most: an emergency zero first,
-  -- then the second corner of an RCS pair whose first corner was just
-  -- written (one corner alone strafes the hull instead of turning it: the
-  -- helm's stabilisation resists the turn), then the elevation (it keeps the
-  -- ship up), then the largest weighted need. A pair is only started when
-  -- the budget covers both writes. Rear thrust and RCS may not dip into the
-  -- last lift_reserve points of the budget, except to finish a pair.
-  local best, best_v, best_need = nil, nil, -1
-  local cost = self:write_cost(now)
-  local after = self:flicker(now) + cost
-  for _, id in ipairs(M.ORDER) do
+  -- Check one controller per pass against what is on the block, so a change
+  -- made by something else is seen even when we have nothing to write.
+  self.verify_i = (self.verify_i or 0) % #M.ORDER + 1
+  local vc = self.ch[M.ORDER[self.verify_i]]
+  if vc.dev then foreign(self, vc, now) end
+
+  -- A running RCS batch goes on, one corner per tick.
+  while #self.batch > 0 do
+    local c = self.ch[table.remove(self.batch, 1)]
+    local v = self:next_value(c, now, true)
+    if v ~= nil then return write(self, c, v, now) end
+  end
+
+  -- Otherwise the elevation, then the largest weighted need.
+  local best, best_v, best_need, best_group = nil, nil, -1, nil
+  for _, id in ipairs({ "lift", "thrust" }) do
     local c = self.ch[id]
     local v = self:next_value(c, now)
     if v ~= nil then
-      local urgent = self.urgent and v == 0
-      local partner = PARTNER[id] and self.ch[PARTNER[id]]
-      local follow = follows(self, c, now)
-      local starts_pair = partner ~= nil and not follow and partner.dev ~= nil
-        and partner.desired ~= nil and self:governed(partner, now) ~= partner.applied
-      -- Turning a controller down sheds stress and frees room: it may use the
-      -- elevation's reserve. Turning one up may not (finishing a pair may).
       local sheds = math.abs(v) < math.abs(c.applied or 0)
-      local room = self.cfg.flicker_limit
-      if c.group ~= "lift" and not follow and not sheds then room = room - self.cfg.lift_reserve end
-      local needed = after + (starts_pair and cost or 0)
-      if urgent or needed <= room then
+      if self:fits({ id }, now, id ~= "lift" and not sheds) then
         local need = math.abs((c.desired or 0) - (c.applied or 0)) / c.cap * self.cfg.weight[c.group]
-        if follow then need = need + 2000 elseif c.group == "lift" then need = need + 1000 end
-        if urgent then need = math.huge end
+        if id == "lift" then need = need + 1000 end
         if need > best_need then best, best_v, best_need = c, v, need end
       end
     end
   end
-
-  if best and not (self.urgent and best_v == 0) and foreign(self, best, now) then
-    return nil
-  end
-  if best then
-    local c, v = best, best_v
-    local grow = math.abs(v) - math.abs(c.applied or 0)
-    self.score = self:flicker(now) + self:write_cost(now)
-    self.score_t = now
-    if self.score > self.peak then self.peak = self.score end
-    c.last_write = now
-    c.writes = c.writes + 1
-    local ok, err = pcall(c.dev.setTargetSpeed, v * c.sign)
-    if ok then
-      c.applied = v
-      c.fault = nil
-      if self.pred then
-        local imp = self:impact(c)
-        if imp then self.pred = self.pred + imp * grow end
-      end
-      self.since[#self.since + 1] = { id = c.id, grow = grow }
-    else
-      c.applied = nil
-      c.fault = tostring(err)
-    end
-    return c.id
-  end
-
-  if self.urgent then
-    local done = true
-    for _, id in ipairs(M.ORDER) do
+  local group = self:rcs_group(now)
+  if group then
+    local need = 0
+    for _, id in ipairs(group) do
       local c = self.ch[id]
-      if c.dev and c.applied ~= 0 then done = false end
+      need = math.max(need, math.abs((c.desired or 0) - (c.applied or 0)) / c.cap * self.cfg.weight.rcs)
     end
-    if done then self.urgent = false end
+    if need > best_need then
+      best_group = group
+      best = nil
+    end
   end
+
+  if best_group then
+    self.batch = {}
+    for i = 2, #best_group do self.batch[#self.batch + 1] = best_group[i] end
+    local c = self.ch[best_group[1]]
+    return write(self, c, self:next_value(c, now, true), now)
+  end
+  if best then return write(self, best, best_v, now) end
   return nil
 end
 
 function M:snapshot(now)
   local out = {}
-  local score = self:flicker(now)
   for _, id in ipairs(M.ORDER) do
     local c = self.ch[id]
     out[id] = {
@@ -368,7 +426,7 @@ function M:snapshot(now)
       cap = c.cap,
       des = c.desired,
       app = c.applied,
-      score = score,
+      score = self:score(c, now),
       writes = c.writes,
       fault = c.fault,
       present = c.dev ~= nil,

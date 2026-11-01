@@ -104,6 +104,7 @@ function M.run(cfg, opts)
       hdg = {
         err = ap.hdg.err, r_cmd = ap.hdg.r_cmd,
         yaw_b = ap.hdg.yaw.est.t[1], yaw_ok = ap.hdg.yaw.ok,
+        sway_b = ap.hdg.sway.est.t[1], sway_ok = ap.hdg.sway.ok, sway_active = ap.hdg.sway_active,
       },
       rsc = bank:snapshot(now),
       eng = gauges,
@@ -164,7 +165,7 @@ function M.run(cfg, opts)
             return math.abs(a - b) > tol * math.max(math.abs(b), 1e-9)
           end
           if moved(cur.k, last_saved.k, 0.005) or moved(cur.A, last_saved.A, 0.01)
-            or moved(cur.yaw_b, last_saved.yaw_b, 0.05) then
+            or moved(cur.yaw_b, last_saved.yaw_b, 0.05) or moved(cur.sway_b, last_saved.sway_b, 0.05) then
             store.save(cfg.cal_file, cur)
             last_saved = cur
           end

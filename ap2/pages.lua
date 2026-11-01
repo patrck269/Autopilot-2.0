@@ -343,6 +343,7 @@ M.CAL = {
       { "Thrust accel", fmt(sp.A, 2) .. " m/s2 at full" },
       { "Drag at 35", fmt(sp.drag35, 2) .. " m/s2" },
       { "RCS yaw", fmt(st.hdg.yaw_b, 2) .. " deg/s2 at full" .. (st.hdg.yaw_ok and "" or " (learning)") },
+      { "RCS sway", fmt(st.hdg.sway_b, 2) .. " m/s2 at full" .. (st.hdg.sway_ok and "" or " (learning)") },
     }
     local y = a.y + 2
     for _, r in ipairs(rows) do

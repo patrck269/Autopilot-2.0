@@ -30,10 +30,11 @@ W.DEFAULTS = {
   noise = 0,            -- +- m/s added to each velocity reading
   -- Engine network: capacity (SU) and stress per RPM of each controller's props.
   stress = { capacity = 1e7, lift = 120, thrust = 60, rcs = 30 },
-  -- Order of the controllers along their shared input shaft. A write resets
-  -- the controller and everything after it. Default: all six in one line,
-  -- the worst case for the last RCS.
-  chain = { "lift", "thrust", "bow_port", "bow_stbd", "stern_port", "stern_stbd" },
+  -- Which controllers get their rotation through which (the ship's layout):
+  -- the four RCS are fed through the elevation controller, not each other.
+  downstream = { lift = { "bow_port", "bow_stbd", "stern_port", "stern_stbd" } },
+  v_side = 0,           -- starting sideways drift, m/s (+ = starboard)
+  v_fwd = 0,            -- starting forward speed, m/s
 }
 
 -- Diagonal RCS partners: one corner pulling alone strafes instead of turning.
@@ -83,6 +84,11 @@ function W.new(controllers, opts, gravity)
     over = false, toggles = 0, destroyed = {},
     ticks = 0, lonely = 0, lonely_run = 0, lonely_max = 0, -- RCS corner pulling without its diagonal partner
   }
+  do
+    local a = w.psi * RAD
+    w.vx = p.v_fwd * math.sin(a) + p.v_side * math.cos(a)
+    w.vz = -p.v_fwd * math.cos(a) + p.v_side * math.sin(a)
+  end
   local k_lift = gravity / (sea * p.hover_rpm_sea ^ 2)
   local k_thrust = p.thrust_full / (sea * 1500 ^ 2)
   local group = { lift = "lift", thrust = "thrust" }
@@ -107,15 +113,12 @@ function W.new(controllers, opts, gravity)
         assert(math.abs(v) <= c.cap, id .. " over cap: " .. v)
         if v ~= w.cmd[id] then
           -- Create detaches the controller and re-attaches it: every block
-          -- that gets rotation through it (its own props, and any controller
-          -- further along its input shaft) drops to 0 (+5) and comes back
+          -- that gets rotation through it (its own props, and every
+          -- controller downstream of it) drops to 0 (+5) and comes back
           -- (+5). The network re-syncs overstress at each step; every switch
           -- costs every block +5.
-          local downstream = false
-          for _, other in ipairs(p.chain) do
-            if other == id then downstream = true end
-            if downstream then bump(other, 10) end
-          end
+          bump(id, 10)
+          for _, other in ipairs(p.downstream[id] or {}) do bump(other, 10) end
           w.cmd[id] = 0
           w.sync_overstress()
           w.cmd[id] = v

@@ -158,7 +158,8 @@ function M:step(s, now, dt, bank)
     self.spd:observe(s, util.ssq(thr_applied) / (thr_cap * thr_cap), now)
     local rcs_now = {}
     for _, id in ipairs(RCS) do rcs_now[id] = bank:applied(id) end
-    self.hdg:observe(s, heading.applied(rcs_now, self.caps), now)
+    local u_now, sw_now = heading.applied(rcs_now, self.caps)
+    self.hdg:observe(s, u_now, sw_now, now)
   end
 
   if not flying then
@@ -170,7 +171,7 @@ function M:step(s, now, dt, bank)
   out.lift = self.alt:command(s, self.tgt.alt, dt, self.caps.lift)
   out.thrust = self.spd:command(s, dt, thr_cap, thr_applied)
   local deadzone = self.mode == "HOVER" and cfg.heading.hover_deadzone or cfg.heading.cruise_deadzone
-  local u = self.hdg:command(s, self.tgt.brg, dt, deadzone)
+  local u, sw = self.hdg:command(s, self.tgt.brg, dt, deadzone)
   -- Pulling at full and still off the bearing: the RCS can't hold this
   -- (e.g. thrust line too far off centre for the RCS cap).
   if math.abs(u) >= 0.99 and math.abs(self.hdg.err) > deadzone then
@@ -178,7 +179,7 @@ function M:step(s, now, dt, bank)
   else
     self.rcs_full_since = nil
   end
-  local rcs = heading.mix(u, self.caps, cfg.actuator.rcs_min_rpm)
+  local rcs = heading.mix(u, sw, self.caps, cfg.actuator.rcs_min_rpm)
   for _, id in ipairs(RCS) do out[id] = rcs[id] end
 
   if self.spd.saturated ~= 0 and self.spd.phase ~= "HOLD" then
@@ -220,7 +221,7 @@ end
 
 function M:saved()
   local h = self.hdg:saved()
-  return { k = self.alt.k, A = self.spd.A, Dn = self.spd.Dn, yaw_b = h.yaw_b }
+  return { k = self.alt.k, A = self.spd.A, Dn = self.spd.Dn, yaw_b = h.yaw_b, sway_b = h.sway_b }
 end
 
 return M

@@ -45,16 +45,22 @@ return {
 
   -- Rotation speed controller protection (see ap2/actuators.lua for how Create
   -- destroys them). Create breaks a controller above 128 flicker points; the
-  -- score decays 1 per tick (20 a second). A write can cost every controller
-  -- that shares its input shaft 10 points, so the whole ship shares one budget:
-  -- about two writes a second in total.
+  -- score decays 1 per tick (20 a second). A write costs the written
+  -- controller and every controller downstream of it 10 points.
   actuator = {
-    flicker_cost = 10,    -- shared points per write with the engine clearly below its limit
-    flicker_cost_risky = 20, -- per write near the stress limit (overstress may flip) or with no reading
+    -- Which controllers get their rotation through which. On this ship the
+    -- four RCS controllers are downstream of the elevation controller (not of
+    -- each other); add the rear thrust here if it is fed through another one.
+    downstream = {
+      lift = { "bow_port", "bow_stbd", "stern_port", "stern_stbd" },
+    },
+    flicker_cost = 10,    -- points per write, on the written controller and everything downstream
+    flicker_risk = 10,    -- extra points on every controller per write near the stress limit
+                          -- (overstress may flip) or with no stress reading
     flicker_decay = 20,   -- points recovered per second
-    flicker_limit = 50,   -- writes wait while the shared score would pass this. KILL bypasses
-                          -- the budget (up to 6 zero writes = +60), so the worst case stays at 110
-    lift_reserve = 20,    -- top of the budget kept for the elevation
+    flicker_limit = 60,   -- no write may take any controller's score past this. KILL bypasses it;
+                          -- its zero writes add at most ~30 more, so the worst case stays near 90
+    lift_reserve = 20,    -- RCS score kept free for elevation writes
     min_interval = { lift = 1.0, thrust = 1.0, rcs = 1.0 }, -- seconds between writes to one controller
     deadband = { lift = 5, thrust = 15, rcs = 100 },        -- smallest RPM change worth a write
     weight = { lift = 3, thrust = 2, rcs = 1.5 },            -- who gets the next write
@@ -129,6 +135,13 @@ return {
     yaw_authority = 1.0,  -- deg/s^2 of yaw at full RCS
     min_authority = 0.1,  -- smallest yaw authority believed (deg/s^2)
     probe_limit = 0.2,    -- RCS share allowed until the direction is confirmed
+    -- Sideslip: drift past sway_engage (m/s) is braked with the same-side
+    -- pullers until it is under sway_settle, then the sway force rests.
+    sway_authority = 0.2, -- first guess: m/s^2 sideways at full RCS
+    min_sway_authority = 0.02,
+    sway_gain = 0.3,      -- (m/s^2) per m/s of sideslip
+    sway_engage = 0.5,    -- m/s
+    sway_settle = 0.15,   -- m/s
   },
 
   -- DEBUG mode RPM for every controller (written to the block as is).

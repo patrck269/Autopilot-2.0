@@ -365,5 +365,28 @@ do
   check(sim.w.writes > writes_before, "other controllers kept flying meanwhile")
 end
 
+print("19. Already drifting sideways when HOVER engages: drift cancelled")
+for _, case in ipairs({ { "pullers as assumed", {} }, { "RCS acting backwards", { rcs_reverse = true } } }) do
+  -- 3 m/s to starboard, hardly any side drag (a VS hull keeps sliding).
+  local opts = { y = 150, rpm = { lift = 958 }, psi = 30, v_side = 3, side_drag = 0.02,
+    saved = { k = 10 / (plant.rho(62) * 900 * 900) } }
+  for k, v in pairs(case[2]) do opts[k] = v end
+  local sim = plant.new(opts)
+  sim.cmd("alt", 150)
+  sim.cmd("brg", 30)
+  sim.cmd("mode", "HOVER")
+  local stopped, worst_hdg = nil, 0
+  sim.run(90, function(s2, s)
+    if not stopped and math.abs(s.v_side) < 0.3 then stopped = s2.w.t end
+    worst_hdg = math.max(worst_hdg, math.abs(util.wrap180(s.hdg - 30)))
+  end)
+  check(stopped ~= nil, case[1] .. ": drift brought under 0.3 m/s", "t=" .. tostring(stopped))
+  check(math.abs(sim.s.v_side) < 0.5, case[1] .. ": and kept there", string.format("%.2f m/s", sim.s.v_side))
+  check(worst_hdg < 6, case[1] .. ": heading held while braking", string.format("worst %.2f deg", worst_hdg))
+  check(sim.w.peak_flicker() <= 60, case[1] .. ": flicker at or under 60", "peak " .. sim.w.peak_flicker())
+  print(string.format("     %s: drift stopped after %.1f s, sway authority %.3f", case[1], stopped or -1,
+    sim.ap.hdg.sway.est.t[1]))
+end
+
 print(failures == 0 and "ALL FLIGHT CHECKS PASSED" or (failures .. " FLIGHT CHECK(S) FAILED"))
 os.exit(failures == 0 and 0 or 1)
