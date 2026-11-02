@@ -17,10 +17,10 @@ return {
   controllers = {
     thrust     = { name = "Create_RotationSpeedController_17", cap = 1500, sign = 1, label = "RSC17 REAR THR" },
     lift       = { name = "Create_RotationSpeedController_16", cap = 2750, sign = 1, label = "RSC16 ELEV" },
-    bow_port   = { name = "Create_RotationSpeedController_13", cap = 1000, sign = 1, label = "RSC13 BOW PORT" },
-    bow_stbd   = { name = "Create_RotationSpeedController_14", cap = 1000, sign = 1, label = "RSC14 BOW STBD" },
-    stern_port = { name = "Create_RotationSpeedController_15", cap = 1000, sign = 1, label = "RSC15 STRN PORT" },
-    stern_stbd = { name = "Create_RotationSpeedController_12", cap = 1000, sign = 1, label = "RSC12 STRN STBD" },
+    bow_port   = { name = "Create_RotationSpeedController_13", cap = 2000, sign = 1, label = "RSC13 BOW PORT" },
+    bow_stbd   = { name = "Create_RotationSpeedController_14", cap = 2000, sign = 1, label = "RSC14 BOW STBD" },
+    stern_port = { name = "Create_RotationSpeedController_15", cap = 2000, sign = 1, label = "RSC15 STRN PORT" },
+    stern_stbd = { name = "Create_RotationSpeedController_12", cap = 2000, sign = 1, label = "RSC12 STRN STBD" },
   },
   speedometer = "Create_Speedometer_1",   -- main engine speed
   stressometer = "Create_Stressometer_2", -- main engine stress
@@ -122,11 +122,11 @@ return {
   },
 
   heading = {
-    bearing_gain = 0.4,   -- (deg/s) of yaw rate per degree of bearing error
+    bearing_gain = 0.2,   -- (deg/s) of yaw rate per degree of bearing error
     max_rate = 4,         -- max yaw rate, deg/s
-    yaw_accel = 0.5,      -- yaw deceleration planned when arriving, deg/s^2 (RCS updates lag ~1-2 s)
+    yaw_accel = 0.15,     -- yaw deceleration planned when arriving, deg/s^2 (RCS updates lag ~3 s)
     rate_gain = 0.4,      -- (deg/s^2) per deg/s of yaw-rate error
-    int_gain = 0.3,       -- integral (deg/s^2) per (deg/s * s)
+    int_gain = 0.1,       -- integral (deg/s^2) per (deg/s * s)
     int_limit = 3,        -- integral limit, deg/s^2
     -- Station keeping: a correction starts when the heading is off by more than
     -- the deadzone (or the hull turns faster than engage_rate), and stops once
@@ -141,18 +141,18 @@ return {
     high_speed_gain = 2.0,
     -- Positive RPM pulls on every RCS corner (fixed). Only the strength is
     -- learned in flight; these are the first guesses at full RCS.
-    yaw_authority = 1.0,  -- deg/s^2 of yaw at full RCS
+    yaw_authority = 2.5,  -- deg/s^2 of yaw at full RCS
     min_authority = 0.1,  -- smallest yaw strength believed (deg/s^2)
     probe_limit = 0.2,    -- sideways force allowed until the bow axis is confirmed
     -- Sideslip: drift past sway_engage (m/s) is braked with the same-side
     -- pullers until it is under sway_settle, then the sway force rests.
-    sway_authority = 0.2, -- first guess: m/s^2 sideways at full RCS
+    sway_authority = 0.75, -- first guess: m/s^2 sideways at full RCS
     min_sway_authority = 0.02,
     sway_gain = 0.3,      -- (m/s^2) per m/s of sideslip
     sway_engage = 0.5,    -- m/s
     sway_settle = 0.15,   -- m/s
     sway_guard_time = 10, -- s: if the drift has grown after braking this long, the brake stops
-    sway_lag = 0.5,       -- s: drift the props' current spin will still add (they spin down slowly)
+    sway_lag = 1.0,       -- s: drift the props' current spin will still add (they spin down slowly)
     yaw_lag = 0.8,        -- s: lead on yaw rate for turn force still spinning up or down
   },
 

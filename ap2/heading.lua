@@ -31,13 +31,21 @@ local rls = require("ap2.rls")
 local M = {}
 M.__index = M
 
--- saved: { yaw_b = } learned on an earlier flight, or nil.
+-- saved: { yaw_b =, rcs_cap = } learned on an earlier flight, or nil.
 function M.new(cfg, saved)
   local c = cfg.heading
   local guess = c.yaw_authority
-  if saved and util.finite(saved.yaw_b) and saved.yaw_b >= c.min_authority then guess = saved.yaw_b end
+  local loaded = false
+  if saved and util.finite(saved.yaw_b) and saved.yaw_b >= c.min_authority then
+    -- Authority is defined at full normalised force. Preserve an old
+    -- calibration when the RPM cap changes: prop force scales with RPM^2.
+    local old_cap = util.finite(saved.rcs_cap) and saved.rcs_cap > 0 and saved.rcs_cap or 1000
+    local new_cap = cfg.controllers.bow_port.cap
+    guess = saved.yaw_b * (new_cap / old_cap) ^ 2
+    loaded = true
+  end
   return setmetatable({
-    c = c,
+    c = c, loaded = loaded,
     -- Wide starting variance: the real strength may be many times the guess.
     yaw = rls.new({ guess, 0.1 }, { math.max(100, 100 * guess * guess), 0.25 }, 0.95),
     integ = 0, err = 0, r_cmd = 0, win = nil,
@@ -173,7 +181,7 @@ function M.mix(u, sw, caps, min_rpm)
 end
 
 function M:saved()
-  return { yaw_b = self.yaw.count > 0 and self:authority() or nil }
+  return { yaw_b = (self.loaded or self.yaw.count > 0) and self:authority() or nil }
 end
 
 return M

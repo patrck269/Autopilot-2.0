@@ -23,7 +23,7 @@ M.__index = M
 M.MODES = { STBY = true, HOVER = true, CRUISE = true, KILL = true, DEBUG = true }
 local RCS = { "bow_port", "bow_stbd", "stern_port", "stern_stbd" }
 
--- saved: table from a previous flight ({ k =, A =, Dn =, yaw_b =, bow = }) or nil.
+-- saved: prior calibration ({ k =, A =, Dn =, yaw_b =, rcs_cap =, bow = }) or nil.
 -- sea_rho: air density at sea level (seeds the hover guess).
 -- tel: telemetry; the learned bow axis is applied to it.
 function M.new(cfg, saved, sea_rho, tel)
@@ -313,6 +313,7 @@ function M:saved()
   local f = self.tel.forward
   return {
     k = self.alt.k, A = self.spd.A, Dn = self.spd.Dn, yaw_b = h.yaw_b,
+    rcs_cap = self.caps.bow_port,
     bow = self.bow_learned and { x = f.x, y = f.y, z = f.z } or nil,
     rcs_map = self.rcs_map,
   }

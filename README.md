@@ -10,10 +10,10 @@ Needs CC: Tweaked and CC:VS (`ship` and `aero` APIs) on the ship's computers.
 |---|---|---|
 | `Create_RotationSpeedController_17` | Rear thrusters. Positive RPM pushes forward; negative is reverse thrust | ±1500 |
 | `Create_RotationSpeedController_16` | Elevation | ±2750 |
-| `Create_RotationSpeedController_13` | Bow port puller | ±1000 |
-| `Create_RotationSpeedController_14` | Bow starboard puller | ±1000 |
-| `Create_RotationSpeedController_15` | Stern port puller | ±1000 |
-| `Create_RotationSpeedController_12` | Stern starboard puller | ±1000 |
+| `Create_RotationSpeedController_13` | Bow port puller | 0–2000 |
+| `Create_RotationSpeedController_14` | Bow starboard puller | 0–2000 |
+| `Create_RotationSpeedController_15` | Stern port puller | 0–2000 |
+| `Create_RotationSpeedController_12` | Stern starboard puller | 0–2000 |
 | `Create_Speedometer_1` | Main engine speed | |
 | `Create_Stressometer_2` | Main engine stress | |
 
@@ -103,11 +103,11 @@ Each monitor is one MFD with option-select buttons around the edge. Top-row and 
 
 **Heading and sideslip.** The RCS only pulls; no controller ever reverses. For a turn force `u` and a sideways force `s`, each corner gets `max(0, …)` of: bow starboard `u+s`, stern port `u−s`, bow port `−u−s`, stern starboard `s−u`. A pure turn is a diagonal pair (right: bow starboard + stern port; left: bow port + stern starboard), a pure strafe is a same-side pair (both starboard corners pull to starboard), and blends stay proportional. One corner on its own mostly strafes the hull, because the Eureka helm's stabilisation resists the turn. So RCS changes are written as one batch: corners turning down first, then corners turning up, each group on consecutive ticks and only started when the whole group fits the budget.
 
-The bearing error sets a yaw-rate command, and a PI loop on yaw rate (taken from the change in heading between samples) gives a yaw acceleration. The directions are fixed: positive RPM pulls on every corner. Only the turning and sideways *strength* is learned in flight, and commands are divided by it. If the RCS pulls at full for 3 s and the heading is still off, SYS shows "RCS AT FULL: HEADING NOT HELD".
+The bearing error sets a yaw-rate command, and a PI loop on yaw rate (taken from the change in heading between samples) gives a yaw acceleration. The turn profile and integral gain are limited for the 2000 RPM RCS so the ship does not bounce ±2° across a new bearing. The directions are fixed: positive RPM pulls on every corner. Only the turning and sideways *strength* is learned in flight, and commands are divided by it. If the RCS pulls at full for 3 s and the heading is still off, SYS shows "RCS AT FULL: HEADING NOT HELD".
 
 Station keeping: a heading correction starts when the heading is more than 2° off (1° in CRUISE) or the hull turns faster than 0.5°/s, and stops within 0.5°. In between, the RCS holds the trim its integral learned (an off-centre thrust line, say) or rests. Sideways drift over 0.5 m/s, including drift the ship already had when the autopilot took over, is braked with the same-side pair until it is under 0.15 m/s; then the sideways force rests. The smallest RCS pulse is 100 RPM. Heading gets first call on the RCS.
 
-Clockwork props don't follow the controller at once: the bearing changes spin by at most 32 RPM a tick, so 0 → 1000 RPM takes about 1.6 s, and spinning down takes as long. The flight computer models that spin. Every learner uses the force the props are really making, not the commanded RPM. The heading loop gets a lead for turn force still on its way, and the sideslip brake lets go early when the remaining spin will finish the job.
+Clockwork props don't follow the controller at once: the bearing changes spin by at most 32 RPM a tick, so 0 → 2000 RPM takes about 3.1 s, and spinning down takes as long. The flight computer models that spin. Every learner uses the force the props are really making, not the commanded RPM. The heading loop gets a lead for turn force still on its way, and the sideslip brake lets go early when the remaining spin will finish the job.
 
 **Controller protection.** In Create 6.0.8 a rotation speed controller is destroyed when its flicker score passes 128; the score decays 1 per tick (20 a second). A target change detaches the controller and re-attaches it. Every block that gets its rotation *through* that controller drops to 0 (+5) and comes back (+5): its own props, and every controller downstream of it. On this ship the four RCS controllers are fed through the elevation controller but not through each other. So an elevation write costs the elevation and all four RCS +10 each, and an RCS write costs only itself. Every switch of the engine network between overstressed and not also costs every block +5. The layout is `actuator.downstream` in `ap2/config.lua`. The flight computer:
 
@@ -125,7 +125,7 @@ Before flying with Autopilot 2.0, make sure no other program writes to these con
 ## Limits
 
 - No controller can pitch the hull: the pullers are horizontal and the elevation is one shared controller. Nose dip is handled by limiting rear thrust, which can stretch an acceleration past 15 s on a hull that dips hard.
-- RCS turning force is limited: at the 1000 RPM cap, a pulling pair gives about a sixth of what 2500 RPM pushing and pulling did. If the rear thrust line is far off the centre of mass, the heading drifts during hard acceleration (SYS shows "RCS AT FULL").
+- RCS turning force is capped at 2000 RPM. A pulling pair at that cap gives about two-thirds of the force of the old 2500 RPM pushing-and-pulling arrangement. If the rear thrust line is far off the centre of mass, the heading can still drift during hard acceleration (SYS shows "RCS AT FULL").
 - Gains are tuned against a simulated hull. In-flight learning covers lift, thrust, drag, and RCS strength and direction; the remaining gains are in `ap2/config.lua` if the real hull needs different ones.
 
 ## Tests

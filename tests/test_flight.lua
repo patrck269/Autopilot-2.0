@@ -6,8 +6,8 @@ local util = require("ap2.util")
 
 -- Station keeping holds inside deliberate bands (fewer controller writes):
 -- altitude within hold_release, heading within the mode's deadzone, plus about
--- half a unit for actuator lag. Clockwork props take ~1.6 s to spin from 0 to
--- 1000 RPM (world.lua models that), which costs a little more at speed.
+-- half a unit for actuator lag. Clockwork props take ~3.1 s to spin from 0 to
+-- 2000 RPM (world.lua models that), which costs a little more at speed.
 local CFG = dofile("ap2/config.lua")
 local ALT_TOL = CFG.altitude.hold_release + 0.5
 local HDG_HOVER = CFG.heading.hover_deadzone + 0.5
@@ -107,8 +107,8 @@ end
 
 print("5. Cruise: 0 -> 30 m/s within 15 s, hold bearing and altitude")
 do
-  -- Off-centre thrust line: at full rear thrust it needs about half of what
-  -- one RCS pair can give at 1000 RPM.
+  -- Off-centre thrust line: at full rear thrust it needs about a quarter of
+  -- what one RCS pair can give at 2000 RPM.
   local sim = plant.new({ hover_rpm_sea = 900, y = 200, rpm = { lift = 900 }, misalign = 0.08, psi = 10,
     saved = { k = 10 / (plant.rho(62) * 900 * 900) } })
   sim.cmd("alt", 200)
@@ -237,7 +237,8 @@ print("11. Turn 40 deg in hover: settles, pairs run together")
 do
   local sim, max_rate, err, late = turn_in_hover({})
   check(max_rate < 10, "yaw rate stays under 10 deg/s", string.format("max %.1f", max_rate))
-  check(late < HDG_HOVER, "settles on the bearing", string.format("err %.2f, late max %.2f", err, late))
+  check(late < 1, "bearing stays within 1 deg after the turn (no +-2 deg bounce)",
+    string.format("err %.2f, late max %.2f", err, late))
   check(lonely_run(sim) <= 1, "diagonal pairs run together", lonely_run(sim) .. " ticks alone at most")
 end
 
@@ -256,10 +257,15 @@ do
   check(lonely_run(sim) <= 1, "diagonal pairs run together", lonely_run(sim) .. " ticks alone at most")
 end
 
-print("14. RCS writes never exceed 1000 RPM, even saturated")
+local RCS_CAP = CFG.controllers.bow_port.cap
+print("14. RCS writes never exceed the " .. RCS_CAP .. " RPM cap, even saturated")
 do
+  local migrated = plant.new({ saved = { yaw_b = 0.5, rcs_cap = 1000 } })
+  local want = 0.5 * (RCS_CAP / 1000) ^ 2
+  check(math.abs(migrated.ap.hdg:authority() - want) < 1e-9,
+    "saved yaw authority scales with the RPM cap", string.format("%.2f", migrated.ap.hdg:authority()))
   local sim = plant.new({ y = 200, rpm = { lift = 900 }, psi = 0, yaw_accel = 0.3,
-    saved = { k = 10 / (plant.rho(62) * 900 * 900), yaw_b = 0.2 } })
+    saved = { k = 10 / (plant.rho(62) * 900 * 900), yaw_b = 0.2, rcs_cap = RCS_CAP } })
   sim.cmd("alt", 200)
   sim.cmd("brg", 170)
   sim.cmd("mode", "HOVER")
@@ -269,7 +275,7 @@ do
       top = math.max(top, math.abs(s2.w.cmd[id]))
     end
   end)
-  check(top == 1000, "RCS reaches but does not pass 1000 RPM", "max " .. top)
+  check(top == RCS_CAP, "RCS reaches but does not pass " .. RCS_CAP .. " RPM", "max " .. top)
 end
 
 print("15. DEBUG: every controller at +15 RPM on the block, calibration untouched")

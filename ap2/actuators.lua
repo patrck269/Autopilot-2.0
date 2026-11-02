@@ -166,7 +166,7 @@ end
 
 -- Advance the modelled prop spin to time now. Clockwork's propeller bearing
 -- (PropellerBearingBlockEntity.tick) moves its spin half way to the target
--- each tick, at most 32 RPM per tick: 1000 RPM takes about 1.6 s.
+-- each tick, at most 32 RPM per tick: 2000 RPM takes about 3.1 s.
 function M:spin(now)
   local t = self.spin_t or now
   local steps = math.min(200, math.floor((now - t) / 0.05 + 1e-6))
