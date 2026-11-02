@@ -12,8 +12,12 @@
 -- Positive RPM pulls on all four corners (checked in game with DEBUG), so the
 -- directions are fixed: only the turning strength is learned. Every 0.5 s the
 -- measured yaw acceleration is fitted to yaw_accel = b * u - d * yaw_rate
--- (u = turn force the props are really applying), with b kept positive.
--- Commands are computed as an acceleration and divided by b.
+-- (u = turn force the props are really applying), with b kept between
+-- min_authority and max_authority. Only windows with a real turn force
+-- (|u| >= learn_min_force) are fitted: with almost no turn force, a yaw from
+-- anything else (an off-centre rear thrust line, a bump) would be credited to
+-- the RCS and inflate b, and the smaller commands that follow can never
+-- correct it. Commands are computed as an acceleration and divided by b.
 --
 -- Heading: bearing error sets a yaw-rate command; a PI loop on yaw rate gives
 -- the yaw acceleration. The integral holds off steady torques such as a rear
@@ -41,8 +45,12 @@ function M.new(cfg, saved)
     -- calibration when the RPM cap changes: prop force scales with RPM^2.
     local old_cap = util.finite(saved.rcs_cap) and saved.rcs_cap > 0 and saved.rcs_cap or 1000
     local new_cap = cfg.controllers.bow_port.cap
-    guess = saved.yaw_b * (new_cap / old_cap) ^ 2
-    loaded = true
+    local b = saved.yaw_b * (new_cap / old_cap) ^ 2
+    -- Past the maximum it was learned from noise: start again from the guess.
+    if b <= c.max_authority then
+      guess = b
+      loaded = true
+    end
   end
   return setmetatable({
     c = c, loaded = loaded,
@@ -79,10 +87,10 @@ function M:observe(s, u, now)
   self.win = { t0 = now, r0 = s.yaw_rate, u = 0, r = 0, n = 0 }
 
   local mu, mr = w.u / w.n, w.r / w.n
-  if math.abs(mu) < 0.03 and math.abs(mr) < 0.3 then return end
+  if math.abs(mu) < self.c.learn_min_force then return end
   local l = self.yaw
   l:update({ mu, -mr }, (s.yaw_rate - w.r0) / span)
-  if l.t[1] < self.c.min_authority then l.t[1] = self.c.min_authority end
+  l.t[1] = util.clamp(l.t[1], self.c.min_authority, self.c.max_authority)
   if l.t[2] < 0 then l.t[2] = 0 end
 end
 

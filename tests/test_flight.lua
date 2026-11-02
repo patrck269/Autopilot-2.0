@@ -536,5 +536,28 @@ do
   check(sim.w.toggles == 0, "steering priority does not overstress the engine", sim.w.toggles .. " switches")
 end
 
+print("23. Saved turning strength from noise: a hover turn still uses the full RCS")
+do
+  -- The calibration the in-game flight computer saved: 1378 deg/s^2 held
+  -- every turn command near 110 RPM, too weak to turn the hull or relearn.
+  local sim = plant.new({ y = 150, rpm = { lift = 958 }, psi = 0,
+    saved = { k = 10 / (plant.rho(62) * 900 * 900), yaw_b = 1378.0205797682015, rcs_cap = 2000,
+      bow = { x = 1, y = 0, z = 0 } } })
+  sim.cmd("alt", 150)
+  sim.cmd("brg", 0)
+  sim.cmd("mode", "HOVER")
+  sim.run(20)
+  sim.cmd("brg", 40)
+  local top = 0
+  sim.run(60, function(s2)
+    for _, id in ipairs({ "bow_port", "bow_stbd", "stern_port", "stern_stbd" }) do
+      top = math.max(top, s2.w.cmd[id] or 0)
+    end
+  end)
+  local err = math.abs(util.wrap180(sim.w.psi - 40))
+  check(top > 1000, "the 40 deg turn drives the RCS past 1000 RPM", "max " .. top .. " RPM")
+  check(err < HDG_HOVER, "the turn completes within 60 s", string.format("off %.1f deg", err))
+end
+
 print(failures == 0 and "ALL FLIGHT CHECKS PASSED" or (failures .. " FLIGHT CHECK(S) FAILED"))
 os.exit(failures == 0 and 0 or 1)

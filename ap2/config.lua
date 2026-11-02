@@ -143,6 +143,12 @@ return {
     -- learned in flight; these are the first guesses at full RCS.
     yaw_authority = 2.5,  -- deg/s^2 of yaw at full RCS
     min_authority = 0.1,  -- smallest yaw strength believed (deg/s^2)
+    max_authority = 50,   -- largest yaw strength believed; a saved value past it is discarded
+    -- Turn force (share of full) a 0.5 s window needs before the strength is
+    -- learned. Weaker windows mostly measure yaw from something else (a bump,
+    -- an off-centre thrust line). Keep it under what a turn commands at
+    -- max_authority (about 0.06), so a high estimate can still come down.
+    learn_min_force = 0.03,
     probe_limit = 0.2,    -- sideways force allowed until the bow axis is confirmed
     -- Sideslip: drift past sway_engage (m/s) is braked with the same-side
     -- pullers until it is under sway_settle, then the sway force rests.
