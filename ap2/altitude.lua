@@ -15,21 +15,33 @@ local util = require("ap2.util")
 local M = {}
 M.__index = M
 
+-- Plausible k for this hull: hover RPM at sea level between
+-- altitude.min_hover_rpm and the elevation cap. Anything outside was learned
+-- from a hull that was not flying (a parked ship on DEBUG's 15 RPM taught
+-- "15 RPM hovers").
+local function k_bounds(cfg, sea_rho)
+  local a, g, rho = cfg.altitude, cfg.gravity, sea_rho or 1
+  local cap = cfg.controllers.lift.cap
+  return g / (rho * cap * cap), g / (rho * a.min_hover_rpm * a.min_hover_rpm)
+end
+
 -- cfg: full config. saved: { k = number } from a previous flight, or nil.
 -- sea_rho: air density at sea level, used to seed k from default_hover_rpm.
 function M.new(cfg, saved, sea_rho)
   local a = cfg.altitude
   local g = cfg.gravity
-  local k
-  if saved and util.finite(saved.k) and saved.k > 0 then
+  local k_min, k_max = k_bounds(cfg, sea_rho)
+  local k = g / ((sea_rho or 1) * a.default_hover_rpm * a.default_hover_rpm)
+  if saved and util.finite(saved.k) and saved.k >= k_min and saved.k <= k_max then
     k = saved.k
-  else
-    k = g / ((sea_rho or 1) * a.default_hover_rpm * a.default_hover_rpm)
   end
   return setmetatable({
     a = a,
     g = g,
     k = k,
+    k_min = k_min,
+    k_max = k_max,
+    sea_rho = sea_rho or 1,
     integ = 0,
     grounded = false,
     samples = 0,
@@ -51,16 +63,22 @@ function M:rpm_for(accel, rho)
   return util.ssqrt((self.g + accel) / (self.k * rho))
 end
 
--- Seed k from an RPM that is holding the hull level right now.
+-- Seed k from an RPM that is holding the hull level right now. An RPM that
+-- cannot be a hover (outside the plausible range) is ignored.
 function M:seed_from_hover(rpm, rho)
   if rpm and rpm > 0 and rho and rho > 0 then
-    self.k = self.g / (rho * rpm * rpm)
-    self.win = nil
+    local k = self.g / (rho * rpm * rpm)
+    if k >= self.k_min and k <= self.k_max then
+      self.k = k
+      self.win = nil
+      return true
+    end
   end
+  return false
 end
 
-function M:reset_calibration(sea_rho)
-  self.k = self.g / ((sea_rho or 1) * self.a.default_hover_rpm * self.a.default_hover_rpm)
+function M:reset_calibration()
+  self.k = self.g / (self.sea_rho * self.a.default_hover_rpm * self.a.default_hover_rpm)
   self.samples = 0
   self.win = nil
   self.integ = 0
@@ -98,7 +116,7 @@ function M:observe(s, applied_rpm, now, want_up)
 
   if self.grounded then
     if want_up then
-      self.k = self.k * self.a.liftoff_step
+      self.k = math.max(self.k * self.a.liftoff_step, self.k_min)
     end
     return
   end
@@ -106,7 +124,7 @@ function M:observe(s, applied_rpm, now, want_up)
   local sample = (accel + self.g) / (rho * force)
   if not util.finite(sample) or sample <= 0 then return end
   local ratio = util.clamp(sample / self.k, 0.67, 1.5)
-  self.k = self.k * ratio ^ self.a.cal_rate
+  self.k = util.clamp(self.k * ratio ^ self.a.cal_rate, self.k_min, self.k_max)
   self.samples = self.samples + 1
   self.last_sample = sample
 end

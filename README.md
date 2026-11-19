@@ -68,7 +68,7 @@ If the sideways brake runs for 10 s and the drift has grown, it stops and SYS sh
 | `kill` | SYS: KILL then CONF KILL | Every controller to 0 immediately |
 | `debug` | SYS: DEBUG then CONF DEBUG | Every controller at +15 RPM as written to the block (config `sign` not applied), to see which way each prop pushes. **The elevation drops to 15 RPM too, so an airborne ship falls.** Learning is paused. Leave with any other mode |
 | `sync` | PFD: SYNC | Targets become the current altitude and heading |
-| `recal` | CAL: RECAL then CONF | Forget the hover calibration. In a steady hover it restarts from the current RPM |
+| `recal` | CAL: RECAL then CONF | Forget the hover calibration: back to the 430 RPM first guess, learned again in flight |
 | `rcs check` | SYS: RCS CHECK then CONF CHECK | In HOVER: find which controller sits at which RCS corner (see RCS check) |
 | `rcs apply` | SYS: RCS APPLY | Use the layout the check found; saved, then the flight computer restarts |
 
@@ -95,7 +95,7 @@ Each monitor is one MFD with option-select buttons around the edge. Top-row and 
 
 ## How it flies
 
-**Hover calibration.** Clockwork blade thrust is `0.5·ρ·v_tip²·C_L·area`, and tip speed is proportional to RPM, so lift is `k·ρ(y)·RPM²`. Inflow from climbing is negligible next to tip speed. The flight computer measures vertical acceleration over 1-second windows against the RPM actually on the controller and refines the single constant `k`. Hover RPM at any height is then `sqrt(g / (k·ρ(h)))`, with `ρ` from `aero.getAirDensity`. On the ground, while asked to climb, RPM steps up until the hull lifts. The learned values are saved to `/ap2_cal.dat`.
+**Hover calibration.** Clockwork blade thrust is `0.5·ρ·v_tip²·C_L·area`, and tip speed is proportional to RPM, so lift is `k·ρ(y)·RPM²`. Inflow from climbing is negligible next to tip speed. The flight computer measures vertical acceleration over 1-second windows against the RPM actually on the controller and refines the single constant `k`. Hover RPM at any height is then `sqrt(g / (k·ρ(h)))`, with `ρ` from `aero.getAirDensity`. On the ground, while asked to climb, RPM steps up until the hull lifts. It only learns in HOVER and CRUISE: a parked ship with the elevation turning (STBY after DEBUG leaves it at 15 RPM) would otherwise learn that 15 RPM hovers. A calibration that puts the sea-level hover under `min_hover_rpm` (100) or over the elevation cap is never believed: learning stops at those limits, and such a saved value is replaced by the first guess at start-up. The learned values are saved to `/ap2_cal.dat`.
 
 **Altitude.** The altitude error sets a vertical-speed command. That command is capped at 6 m/s up and 5 m/s down, and further limited near the target so the ship can still stop in time. A vertical-speed loop turns it into an acceleration, and the calibration turns that acceleration into RPM. Negative elevation RPM pulls down when the airborne hull needs more than gravity to slow a climb. Once settled within 1 block, the elevation is held at the calibrated hover RPM (plus its altitude trim) and only rewritten if the hull drifts past 1.5 blocks or starts moving.
 
@@ -133,6 +133,7 @@ Before flying with Autopilot 2.0, make sure no other program writes to these con
 ```
 lua tests/test_flight.lua
 lua tests/test_install.lua
+lua tests/test_mfd.lua
 python tests/cc/run.py <path to CraftOS-PC_console.exe>
 ```
 

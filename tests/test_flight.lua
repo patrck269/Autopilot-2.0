@@ -559,5 +559,29 @@ do
   check(err < HDG_HOVER, "the turn completes within 60 s", string.format("off %.1f deg", err))
 end
 
+print("24. Parked on DEBUG's 15 RPM: the hover calibration is not taught that 15 RPM hovers")
+do
+  -- In game: after DEBUG the ship sat in STBY with 15 RPM on the elevation,
+  -- jittering on its moorings, and learned a 15 RPM hover (k 0.0365).
+  math.randomseed(11)
+  local sim = plant.new({ hover_rpm_sea = 430, noise = 0.3, rpm = { lift = 15 } })
+  local before = sim.ap.alt:hover_rpm(plant.rho(62))
+  sim.run(60)
+  local after = sim.ap.alt:hover_rpm(plant.rho(62))
+  check(math.abs(after - before) < 1, "STBY with the lift turning learns nothing",
+    string.format("hover %.0f -> %.0f RPM", before, after))
+
+  local bad = plant.new({ saved = { k = 10 / (plant.rho(62) * 15 * 15) } })
+  check(math.abs(bad.ap.alt:hover_rpm(plant.rho(62)) - CFG.altitude.default_hover_rpm) < 1,
+    "a saved 15 RPM hover is discarded at start-up", string.format("%.0f RPM", bad.ap.alt:hover_rpm(plant.rho(62))))
+
+  local sim2 = plant.new({ y = 150, rpm = { lift = 15 }, saved = { k = 10 / (plant.rho(62) * 900 * 900) } })
+  sim2.run(1)
+  local ok = sim2.ap:command({ c = "recal" }, sim2.s)
+  check(ok and math.abs(sim2.ap.alt:hover_rpm(plant.rho(62)) - CFG.altitude.default_hover_rpm) < 1,
+    "recal with 15 RPM on the lift resets to the default, not to 15 RPM",
+    string.format("%.0f RPM", sim2.ap.alt:hover_rpm(plant.rho(62))))
+end
+
 print(failures == 0 and "ALL FLIGHT CHECKS PASSED" or (failures .. " FLIGHT CHECK(S) FAILED"))
 os.exit(failures == 0 and 0 or 1)

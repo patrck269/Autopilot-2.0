@@ -82,11 +82,41 @@ function M.new(displays, pages, saved)
       mfd.slots = { s.slots[1], s.slots[2], s.slots[3] }
       mfd.sel = (s.sel == 1 or s.sel == 2 or s.sel == 3) and s.sel or 1
     end
+    self:distinct(mfd)
     self.displays[i] = mfd
     self.by_name[d.name] = mfd
   end
   self:dedupe()
   return self
+end
+
+-- Give MFD d three different formats (a layout saved before this rule may
+-- repeat one). The shown slot keeps its page; a repeat in another slot is
+-- replaced by the first page the MFD does not hold.
+function M:distinct(d)
+  local held = { [d.slots[d.sel]] = true }
+  for k = 1, 3 do
+    if k ~= d.sel then
+      if held[d.slots[k]] then
+        for _, p in ipairs(self.pages) do
+          if not held[p.id] and p.id ~= d.slots[1] and p.id ~= d.slots[2] and p.id ~= d.slots[3] then
+            d.slots[k] = p.id
+            break
+          end
+        end
+      end
+      held[d.slots[k]] = true
+    end
+  end
+end
+
+-- Put page id in slot k of MFD d. If d already holds id in another slot,
+-- that slot takes the page slot k had, so the three formats stay different.
+function M:place(d, k, id)
+  for j = 1, 3 do
+    if j ~= k and d.slots[j] == id then d.slots[j] = d.slots[k] end
+  end
+  d.slots[k] = id
 end
 
 function M:shown(d)
@@ -109,7 +139,7 @@ function M:dedupe()
     if used[id] then
       for _, p in ipairs(self.pages) do
         if not used[p.id] then
-          d.slots[d.sel] = p.id
+          self:place(d, d.sel, p.id)
           id = p.id
           break
         end
@@ -124,8 +154,8 @@ function M:show(d, id)
   local old = self:shown(d)
   if old == id then return end
   local other = self:showing(id, d)
-  d.slots[d.sel] = id
-  if other then other.slots[other.sel] = old end
+  self:place(d, d.sel, id)
+  if other then self:place(other, other.sel, old) end
 end
 
 -- Select format slot k on MFD d.
@@ -134,7 +164,7 @@ function M:select(d, k)
   local old = self:shown(d)
   local other = self:showing(id, d)
   d.sel = k
-  if other then other.slots[other.sel] = old end
+  if other then self:place(other, other.sel, old) end
 end
 
 function M:partner(d)

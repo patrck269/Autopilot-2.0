@@ -96,6 +96,7 @@ return {
     reverse_lift = true,  -- allow negative elevation RPM (pull down) when airborne
     -- Hover calibration. Lift = k * airDensity(y) * rpm^2, learned in flight.
     default_hover_rpm = 430, -- first guess at sea-level density, before any learning
+    min_hover_rpm = 100,  -- a calibration that says the hull hovers below this (at sea level) is not believed
     cal_window = 1.0,     -- seconds per calibration sample
     cal_rate = 0.5,       -- fraction of each sample applied (0..1)
     cal_max_vy = 15,      -- samples taken only while |vy| is below this, m/s
