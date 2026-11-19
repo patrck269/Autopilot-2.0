@@ -42,7 +42,6 @@ function M.new(cfg, saved, sea_rho, tel)
     bow_learned = saved ~= nil and saved.bow ~= nil,
     rcs_map = saved and saved.rcs_map or nil, -- RCS layout from an earlier check (applied at start-up)
     rcs_found = nil,                           -- a differing layout found by the last check
-    sea_rho = sea_rho,
     caps = {},
     accel_limited_since = nil,
     events = {},
@@ -152,8 +151,6 @@ end
 function M:step(s, now, dt, bank)
   local out = {}
   local cfg = self.cfg
-  local lift_applied = bank:applied("lift")
-  self.lift_applied = lift_applied
   bank.exact = self.mode == "DEBUG"
   local thr_applied = bank:applied("thrust")
   local thr_cap = self.caps.thrust
