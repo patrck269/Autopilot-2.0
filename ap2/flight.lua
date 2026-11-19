@@ -136,6 +136,8 @@ function M.run(cfg, opts)
       store.save(cfg.cal_file, ap:saved())
       reboot_at = os.clock() + 1
     end
+    -- Save at once, so a restart cannot bring the old strength back.
+    if ok and msg.c == "rcs_reset" then store.save(cfg.cal_file, ap:saved()) end
     message = text
     if from and from ~= "terminal" then link:reply(from, { ok = ok, text = text, seq = msg.seq }) end
     link:send_status(status(os.clock()))

@@ -71,6 +71,7 @@ If the sideways brake runs for 10 s and the drift has grown, it stops and SYS sh
 | `recal` | CAL: RECAL then CONF | Forget the hover calibration: back to the 430 RPM first guess, learned again in flight |
 | `rcs check` | SYS: RCS CHECK then CONF CHECK | In HOVER: find which controller sits at which RCS corner (see RCS check) |
 | `rcs apply` | SYS: RCS APPLY | Use the layout the check found; saved, then the flight computer restarts |
+| `rcs reset` | CAL: RCS RESET then CONF | Forget the learned RCS turning and sideways strength: back to the first guesses, learned again in flight. The corner layout from `rcs apply` and the bow axis stay |
 
 If the flight computer reboots while the elevation is spinning, it takes over in HOVER at the current altitude.
 
@@ -82,6 +83,7 @@ Each monitor is one MFD with option-select buttons around the edge. Top-row and 
 - A page is only shown on one MFD at a time. Picking a page that another MFD is showing moves it here and sends this MFD's old page there.
 - SWAP exchanges two MFDs: 1↔2 and 3↔4, with an odd last display swapping with display 1.
 - The layout is saved and comes back after a reboot.
+- Pages fit any monitor size: they draw only inside the area between the buttons, and on narrow monitors (two blocks wide) AP, CAL, PFD and HSI move their extra columns onto extra lines.
 
 | Page | Shows |
 |---|---|
@@ -89,7 +91,7 @@ Each monitor is one MFD with option-select buttons around the edge. Top-row and 
 | AP | Mode, every target against its actual value, bearing error, speed reference, hover RPM here and at the target, alerts |
 | HSI | Heading-up compass rose with bearing bug and track, ground speed, drift, X/Z position |
 | ENG | Main engine RPM, stress against capacity, each controller's applied and desired RPM against its cap. Orange: held by the stress limit. Magenta: changed by another computer. Red: missing |
-| CAL | Ground or airborne, sample count, hover RPM here and at target, air density, lift constant, altitude trim, mass, learned thrust and drag, learned RCS turning and sideways strength, bow axis (learned or config) |
+| CAL | Ground or airborne, sample count, hover RPM here and at target, air density, lift constant, altitude trim, mass, learned thrust and drag, learned RCS turning and sideways strength, bow axis (learned or config). RECAL and RCS RESET |
 | SYS | Link health, start-up errors and warnings, live alerts, event log (RCS check results), RCS CHECK, RCS APPLY, DEBUG, KILL |
 | UFC | Keypad: type a number, then ALT, BRG, or SPD SET |
 

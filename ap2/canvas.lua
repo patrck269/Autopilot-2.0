@@ -43,9 +43,12 @@ function M:clear(bg, fg)
   end
 end
 
--- Write text at x, y; clipped to the canvas (and to the optional clip box).
+-- Write text at x, y; clipped to the canvas and to the clip box (the one
+-- given, else self.clip, set while a page draws so it cannot spill onto
+-- the buttons).
 function M:write(x, y, str, fg, bg, clip)
   str = tostring(str)
+  clip = clip or self.clip
   if y < 1 or y > self.h then return end
   local x0, x1 = 1, self.w
   if clip then

@@ -14,6 +14,7 @@ M.HELP = {
   "recal       forget the hover calibration",
   "rcs check   find each RCS corner (HOVER)",
   "rcs apply   use the layout it found",
+  "rcs reset   forget the learned RCS strength",
 }
 
 local MODES = { hover = "HOVER", h = "HOVER", cruise = "CRUISE", c = "CRUISE", stby = "STBY", standby = "STBY", off = "STBY", kill = "KILL", debug = "DEBUG" }
@@ -31,7 +32,8 @@ function M.parse(line)
   if head == "rcs" then
     if words[2] == nil or words[2] == "check" then return { c = "rcs_check" } end
     if words[2] == "apply" then return { c = "rcs_apply" } end
-    return nil, "rcs check | rcs apply"
+    if words[2] == "reset" then return { c = "rcs_reset" } end
+    return nil, "rcs check | rcs apply | rcs reset"
   end
   local c = VALUES[head]
   if c then

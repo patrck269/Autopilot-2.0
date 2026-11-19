@@ -136,6 +136,16 @@ function M:command(msg, s)
     self.rcs_found = nil
     self:log("RCS LAYOUT SAVED")
     return true, "rcs layout saved; the flight computer restarts with it"
+  elseif c == "rcs_reset" then
+    -- Forget the learned RCS turning and sideways strength: back to the
+    -- first guesses, learned again in flight. The corner layout from an RCS
+    -- check and the bow axis stay.
+    self.hdg = heading.new(self.cfg, nil)
+    local frame_ok = self.motion.frame_ok
+    self.motion = motion.new(self.cfg, self.tel)
+    self.motion.frame_ok = frame_ok
+    self:log("RCS CAL RESET")
+    return true, "rcs turning and sideways strength reset to the first guess"
   elseif c == "recal" then
     -- Forget the hover calibration: back to the default guess, then learn
     -- again in flight. (Seeding from the lift RPM on screen would keep a bad

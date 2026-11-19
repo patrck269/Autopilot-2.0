@@ -293,7 +293,10 @@ function M:draw_menu(d, c, area)
     local where = self:showing(p.id, nil)
     local tag = ""
     if where == d then tag = "  (here)" elseif where then tag = "  (on " .. where.name .. ")" end
-    c:write(area.x, y, string.format("%-4s %s%s", p.id, p.title, tag), where == d and colors.lime or colors.white)
+    local text = string.format("%-4s %s%s", p.id, p.title, tag)
+    -- Too wide for this display: drop the title, keep where it is shown.
+    if #text > area.w then text = string.format("%-4s%s", p.id, tag) end
+    c:write(area.x, y, text, where == d and colors.lime or colors.white)
     y = y + 1
   end
 end
@@ -302,12 +305,16 @@ function M:draw(d, ctx)
   local c = d.canvas
   c:clear(colors.black, colors.white)
   local area = d.lay.content
+  -- Pages and the menu draw inside the content area only; the buttons
+  -- around it are drawn after, unclipped.
+  c.clip = area
   if d.menu then
     self:draw_menu(d, c, area)
   else
     local page = self.by_id[self:shown(d)]
     page.draw(c, area, ctx, d)
   end
+  c.clip = nil
   local flash = d.flash and ctx.now - d.flash.t < 0.25 and d.flash.pos or nil
   for pos, b in pairs(self:side_buttons(d, ctx)) do
     local r = d.lay.osb[pos]

@@ -54,7 +54,10 @@ local function no_data(c, a, ctx)
   if not stale(ctx) then return false end
   local y = a.y + 2
   if ctx.st and ctx.st.errors then
-    c:write(a.x, y, "FLIGHT COMPUTER START-UP FAILED", colors.red)
+    for i, part in ipairs(wrap("FLIGHT COMPUTER START-UP FAILED", a.w)) do
+      if i > 1 then y = y + 1 end
+      c:write(a.x, y, part, colors.red)
+    end
     for _, e in ipairs(ctx.st.errors) do
       for _, part in ipairs(wrap(e, a.w)) do
         y = y + 1
@@ -108,8 +111,11 @@ M.PFD = {
     header(c, a, "PFD", ctx)
     if no_data(c, a, ctx) then return end
     local st, s = ctx.st, ctx.st.s
+    local att = "PITCH " .. fmt(s.pitch, 1) .. "  ROLL " .. fmt(s.roll, 1)
+    local phases = st.alt.phase .. "/" .. st.spd.phase
+    local one_line = #att + 2 + #phases <= a.w
     -- Attitude: sky above, ground below; horizon moves with pitch, tilts with roll.
-    local top, bottom = a.y + 2, a.y + a.h - 2
+    local top, bottom = a.y + 2, a.y + a.h - (one_line and 2 or 3)
     local cx = a.x + a.w / 2
     local cy = (top + bottom) / 2
     local slope = math.tan(rad(util.clamp(s.roll, -60, 60))) * 0.67
@@ -148,8 +154,12 @@ M.PFD = {
       { "TGT" .. fmt(st.tgt.alt, 0, 6), colors.cyan },
       { "VS" .. fmt(s.vy, 1, 7), math.abs(s.vy) > 0.3 and colors.yellow or colors.white },
     })
-    c:write(a.x, a.y + a.h - 1, "PITCH " .. fmt(s.pitch, 1) .. "  ROLL " .. fmt(s.roll, 1) ..
-      "  " .. st.alt.phase .. "/" .. st.spd.phase, colors.lightGray, colors.black)
+    if one_line then
+      c:write(a.x, a.y + a.h - 1, att .. "  " .. phases, colors.lightGray, colors.black)
+    else
+      c:write(a.x, a.y + a.h - 2, att, colors.lightGray, colors.black)
+      c:write(a.x, a.y + a.h - 1, phases, colors.lightGray, colors.black)
+    end
   end,
 }
 
@@ -175,11 +185,18 @@ M.AP = {
     if no_data(c, a, ctx) then return end
     local st, s = ctx.st, ctx.st.s
     local x, y = a.x, a.y + 2
+    -- Narrow display: the phase/error column goes under its row.
+    local narrow = a.w < 34
     local function row(label, tgt, now, extra, color)
       c:write(x, y, label, colors.yellow)
       if tgt then c:write(x + 4, y, "TGT " .. tgt, colors.cyan) end
       c:write(x + 14, y, now, colors.white)
-      if extra then c:write(x + 26, y, extra, color or colors.lightGray) end
+      if extra and narrow then
+        y = y + 1
+        c:write(x + 4, y, extra, color or colors.lightGray)
+      elseif extra then
+        c:write(x + 26, y, extra, color or colors.lightGray)
+      end
       y = y + 1
     end
     row("ALT", fmt(st.tgt.alt, 0, 5), "Y " .. fmt(s.y, 1), st.alt.phase,
@@ -190,11 +207,19 @@ M.AP = {
       st.spd.phase == "PITCH" and colors.red or colors.lightGray)
     row("REF", nil, fmt(st.spd.v_ref, 1) .. " m/s", "GS " .. fmt(s.gs, 1))
     y = y + 1
-    c:write(x, y, "Hover " .. fmt(st.alt.hover_now, 0) .. " RPM here, " .. fmt(st.alt.hover_tgt, 0) .. " at target", colors.lightGray)
-    y = y + 2
-    for i = 1, math.min(#st.alerts, a.y + a.h - 2 - y) do
-      c:write(x, y, st.alerts[i], colors.red)
+    local hover = "Hover " .. fmt(st.alt.hover_now, 0) .. " RPM here, " .. fmt(st.alt.hover_tgt, 0) .. " at target"
+    for _, part in ipairs(wrap(hover, a.w)) do
+      c:write(x, y, part, colors.lightGray)
       y = y + 1
+    end
+    y = y + 1
+    for _, alert in ipairs(st.alerts) do
+      for _, part in ipairs(wrap(alert, a.w)) do
+        if y < a.y + a.h - 1 then
+          c:write(x, y, part, colors.red)
+          y = y + 1
+        end
+      end
     end
     if ctx.reply then c:write(x, a.y + a.h - 1, ctx.reply, colors.lightGray) end
   end,
@@ -221,10 +246,18 @@ M.HSI = {
     header(c, a, "HSI", ctx)
     if no_data(c, a, ctx) then return end
     local st, s = ctx.st, ctx.st.s
+    local trk = "TRK " .. compass(s.track) .. " GS " .. fmt(s.gs, 1)
+    local drift = "DRIFT " .. fmt(s.v_side, 1) .. " m/s"
+    local pos = "X" .. fmt(s.x, 0) .. " Z" .. fmt(s.z, 0)
+    -- Footer: the position shares the drift row when it fits, else its own.
+    local footer = #drift + 1 + #pos <= a.w and 2 or 3
     local cx = a.x + a.w / 2
-    local cy = a.y + 1 + (a.h - 2) / 2
-    local ry = math.max(2, (a.h - 4) / 2)
+    local cy = a.y + 1 + (a.h - 1 - footer) / 2
+    -- A character is about 1.5 times as tall as it is wide: rx = 1.5 * ry
+    -- keeps the rose round, whichever side of the display limits it.
+    local ry = math.max(2, (a.h - 3 - footer) / 2)
     local rx = math.min(ry * 1.5, a.w / 2 - 2)
+    ry = math.max(2, math.min(ry, rx / 1.5))
     local function at(bearing, scale)
       local rel = rad(bearing - s.hdg)
       return cx + rx * scale * sin(rel), cy - ry * scale * cos(rel)
@@ -252,10 +285,14 @@ M.HSI = {
     c:write(a.x, a.y + 1, "HDG " .. compass(s.hdg), colors.white)
     local brg = "BRG " .. compass(st.tgt.brg)
     c:write(a.x + a.w - #brg, a.y + 1, brg, colors.cyan)
-    c:write(a.x, a.y + a.h - 2, "TRK " .. compass(s.track) .. " GS " .. fmt(s.gs, 1), colors.magenta)
-    c:write(a.x, a.y + a.h - 1, "DRIFT " .. fmt(s.v_side, 1) .. " m/s", colors.lightGray)
-    local pos = "X" .. fmt(s.x, 0) .. " Z" .. fmt(s.z, 0)
-    c:write(a.x + a.w - #pos, a.y + a.h - 1, pos, colors.lightGray)
+    local fy = a.y + a.h - footer
+    c:write(a.x, fy, trk, colors.magenta)
+    c:write(a.x, fy + 1, drift, colors.lightGray)
+    if footer == 2 then
+      c:write(a.x + a.w - #pos, fy + 1, pos, colors.lightGray)
+    else
+      c:write(a.x, fy + 2, pos, colors.lightGray)
+    end
   end,
 }
 
@@ -275,7 +312,9 @@ M.ENG = {
     c:write(a.x, y, "MAIN ENGINE " .. fmt(e.rpm, 0) .. " RPM", colors.white)
     y = y + 1
     local load = (e.su and e.cap and e.cap > 0) and e.su / e.cap or nil
-    c:write(a.x, y, "STRESS " .. fmt(e.su, 0) .. " / " .. fmt(e.cap, 0) .. " SU", colors.white)
+    local stress = "STRESS " .. fmt(e.su, 0) .. " / " .. fmt(e.cap, 0) .. " SU"
+    if #stress > a.w then stress = "SU " .. fmt(e.su, 0) .. "/" .. fmt(e.cap, 0) end
+    c:write(a.x, y, stress, colors.white)
     y = y + 1
     if load then
       local w = a.w
@@ -313,9 +352,10 @@ M.ENG = {
 
 ------------------------------------------------------------------ CAL
 M.CAL = {
-  id = "CAL", title = "Hover and thrust calibration",
+  id = "CAL", title = "Hover, thrust and RCS calibration",
   osb = function(ctx)
     local armed = ctx.arm.recal and ctx.now - ctx.arm.recal < 3
+    local rcs_armed = ctx.arm.rcs_reset and ctx.now - ctx.arm.rcs_reset < 3
     return {
       T1 = { label = armed and "CONF\nRECAL" or "RECAL", warn = armed, action = function(x)
         if armed then
@@ -325,6 +365,14 @@ M.CAL = {
           x.arm.recal = x.now
         end
       end },
+      T2 = { label = rcs_armed and "CONF\nRESET" or "RCS\nRESET", warn = rcs_armed, action = function(x)
+        if rcs_armed then
+          x.arm.rcs_reset = nil
+          x.send("rcs_reset")
+        else
+          x.arm.rcs_reset = x.now
+        end
+      end },
     }
   end,
   draw = function(c, a, ctx)
@@ -332,26 +380,40 @@ M.CAL = {
     if no_data(c, a, ctx) then return end
     local st, s, al, sp = ctx.st, ctx.st.s, ctx.st.alt, ctx.st.spd
     local rows = {
-      { "State", (al.grounded and "ON GROUND" or "AIRBORNE") .. "  " .. al.phase },
-      { "Samples", fmt(al.samples, 0) },
-      { "Hover RPM here", fmt(al.hover_now, 0) },
-      { "Hover RPM @ tgt", fmt(al.hover_tgt, 0) .. "  (Y " .. fmt(st.tgt.alt, 0) .. ")" },
-      { "Air density", fmt(s.rho, 4) .. " / tgt " .. fmt(al.rho_tgt, 4) },
-      { "Lift constant k", al.k and string.format("%.4g", al.k) or "---" },
-      { "Alt integral", fmt(al.integ, 2) .. " m/s2" },
-      { "Ship mass", fmt(s.mass, 0) .. " kg" },
-      { "Thrust accel", fmt(sp.A, 2) .. " m/s2 at full" },
-      { "Drag at 35", fmt(sp.drag35, 2) .. " m/s2" },
-      { "RCS yaw", fmt(st.hdg.yaw_b, 2) .. " deg/s2 at full" },
-      { "RCS sideways", fmt(st.hdg.sway_auth, 2) .. " m/s2 at full" },
-      { "Bow axis", tostring(st.hdg.bow) .. (st.hdg.bow_learned and " (learned)"
+      { "State", "State", (al.grounded and "ON GROUND" or "AIRBORNE") .. "  " .. al.phase },
+      { "Samples", "Samples", fmt(al.samples, 0) },
+      { "Hover RPM here", "Hover here", fmt(al.hover_now, 0) },
+      { "Hover RPM @ tgt", "Hover @tgt", fmt(al.hover_tgt, 0) .. "  (Y " .. fmt(st.tgt.alt, 0) .. ")" },
+      { "Air density", "Air dens", fmt(s.rho, 4) .. " / tgt " .. fmt(al.rho_tgt, 4) },
+      { "Lift constant k", "Lift k", al.k and string.format("%.4g", al.k) or "---" },
+      { "Alt integral", "Alt integ", fmt(al.integ, 2) .. " m/s2" },
+      { "Ship mass", "Mass", fmt(s.mass, 0) .. " kg" },
+      { "Thrust accel", "Thrust", fmt(sp.A, 2) .. " m/s2 at full" },
+      { "Drag at 35", "Drag @35", fmt(sp.drag35, 2) .. " m/s2" },
+      { "RCS yaw", "RCS yaw", fmt(st.hdg.yaw_b, 2) .. " deg/s2 at full" },
+      { "RCS sideways", "RCS side", fmt(st.hdg.sway_auth, 2) .. " m/s2 at full" },
+      { "Bow axis", "Bow axis", tostring(st.hdg.bow) .. (st.hdg.bow_learned and " (learned)"
         or (st.hdg.frame_ok and " (config, confirmed)" or " (config)")) },
     }
     local y = a.y + 2
+    local last = a.y + a.h - (al.saturated and 2 or 1)
+    -- Wide: label and value side by side. Narrow and tall: value under its
+    -- label. Narrow and short: short labels, values cut at the edge.
+    local wide = a.w >= 17 + 20
+    local stacked = not wide and (last - y + 1) >= 2 * #rows
     for _, r in ipairs(rows) do
-      if y >= a.y + a.h then break end
-      c:write(a.x, y, r[1], colors.lightGray)
-      c:write(a.x + 17, y, r[2], colors.white)
+      if y > last then break end
+      if wide then
+        c:write(a.x, y, r[1], colors.lightGray)
+        c:write(a.x + 17, y, r[3], colors.white)
+      elseif stacked then
+        c:write(a.x, y, r[1], colors.lightGray)
+        y = y + 1
+        c:write(a.x + 1, y, r[3], colors.white)
+      else
+        c:write(a.x, y, r[2], colors.lightGray)
+        c:write(a.x + 11, y, r[3], colors.white)
+      end
       y = y + 1
     end
     if al.saturated then c:write(a.x, a.y + a.h - 1, "ELEVATION AT RPM CAP", colors.red) end
