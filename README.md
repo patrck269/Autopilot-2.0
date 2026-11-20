@@ -83,6 +83,7 @@ Each monitor is one MFD with option-select buttons around the edge. Top-row and 
 - A page is only shown on one MFD at a time. Picking a page that another MFD is showing moves it here and sends this MFD's old page there.
 - SWAP exchanges two MFDs: 1↔2 and 3↔4, with an odd last display swapping with display 1.
 - The layout is saved and comes back after a reboot.
+- A monitor reached under two names (touching the computer and also wired to a modem) carries one MFD; SYS lists the second name.
 - Pages fit any monitor size: they draw only inside the area between the buttons, and on narrow monitors (two blocks wide) AP, CAL, PFD and HSI move their extra columns onto extra lines.
 
 | Page | Shows |

@@ -72,6 +72,39 @@ function M.flight(cfg, env, role)
   return errors, warnings
 end
 
+-- A monitor touching the computer and also wired to a modem is reached
+-- under two names (left and monitor_15, say). Both write to the same
+-- screen, so two MFDs on it would draw over each other. Names that share a
+-- screen are found by setting the cursor through each name in turn and
+-- reading it back through all of them: a shared screen reports the cursor
+-- the later name set. Returns the names to use (the first of each screen)
+-- and the list of { name, same_as } left out.
+local function one_name_per_screen(P, names)
+  local mons, tag = {}, 10000
+  for i, name in ipairs(names) do
+    local m = P.wrap(name)
+    if m and m.setCursorPos and m.getCursorPos then
+      mons[i] = m
+      m.setCursorPos(1, tag + i)
+    end
+  end
+  local first, keep, dropped = {}, {}, {}
+  for i, name in ipairs(names) do
+    local screen = i
+    if mons[i] then
+      local _, y = mons[i].getCursorPos()
+      if y and y > tag and y <= tag + #names then screen = y - tag end
+    end
+    if first[screen] then
+      dropped[#dropped + 1] = { name, first[screen] }
+    else
+      first[screen] = name
+      keep[#keep + 1] = name
+    end
+  end
+  return keep, dropped
+end
+
 -- Returns errors, warnings, list of monitor names to use.
 function M.command(cfg, env, role)
   local P = env.peripheral
@@ -95,6 +128,11 @@ function M.command(cfg, env, role)
         warnings[#warnings + 1] = "Missing MFD monitor " .. name
       end
     end
+  end
+  local dropped
+  names, dropped = one_name_per_screen(P, names)
+  for _, d in ipairs(dropped) do
+    warnings[#warnings + 1] = d[1] .. " is the same monitor as " .. d[2] .. ": one MFD on it"
   end
   for _, name in ipairs(names) do
     local m = P.wrap(name)

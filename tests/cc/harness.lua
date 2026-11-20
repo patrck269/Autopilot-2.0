@@ -13,6 +13,19 @@ if fs.exists("/scenario.txt") then
   h.close()
 end
 
+-- Use every attached monitor (monitors = {}), as an in-game install does,
+-- so a monitor reached under two names is seen twice.
+do
+  local h = fs.open("/ap2/config.lua", "r")
+  local text = h.readAll()
+  h.close()
+  local patched, n = text:gsub("monitors = %b{}", "monitors = {}", 1)
+  assert(n == 1, "monitors line not found in /ap2/config.lua")
+  h = fs.open("/ap2/config.lua", "w")
+  h.write(patched)
+  h.close()
+end
+
 local cfg = dofile("/ap2/config.lua")
 local W = dofile("/tests/world.lua")
 local mfd = require("ap2.mfd")
@@ -60,6 +73,7 @@ local function fake_monitor(name, mw, mh)
     setBackgroundColour = function() end, setTextColour = function() end,
     clear = blank, setCursorBlink = function() end,
     setCursorPos = function(x, y) m.x, m.y = x, y end,
+    getCursorPos = function() return m.x, m.y end,
     write = function(t) put(tostring(t)) end,
     blit = function(t) put(t) end,
     isColor = function() return true end, isColour = function() return true end,
@@ -101,6 +115,9 @@ fake[cfg.stressometer] = { "Create_Stressometer", {
   getStress = function() return 120000 end, getStressCapacity = function() return 479231 end } }
 fake.back = { "modem", modem }
 for name, m in pairs(monitors) do fake[name] = { "monitor", m.obj } end
+-- monitor_4 also reached under a second name, like a monitor touching the
+-- computer that is also wired to a modem: it must carry one MFD, not two.
+fake.monitor_9 = { "monitor", monitors.monitor_4.obj }
 
 local held_back = {}
 if scenario == "missing" then
@@ -204,6 +221,8 @@ local function both_script()
   check(shows("monitor_6", "ENGINE"), "monitor_6 shows ENG")
   check(shows("monitor_7", "SYSTEM"), "monitor_7 shows SYS")
   check(shows("monitor_6", "MAIN ENGINE 256 RPM"), "speedometer reading on ENG")
+  check(not shows("monitor_4", "AUTOPILOT"), "monitor_4 reached under two names carries one MFD")
+  check(shows("monitor_7", "monitor_9"), "the second name is reported on SYS")
   dump("boot")
 
   press("monitor_4", "B5") -- SWAP 4 <-> 5
